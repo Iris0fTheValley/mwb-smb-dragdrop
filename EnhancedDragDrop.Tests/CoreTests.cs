@@ -42,6 +42,8 @@ public sealed class CoreTests
         ]);
         Assert.Equal(@"\\ID-BLUEBERRY\ID-BLUEBERRY_D\Models\a.gguf", resolver.Resolve("ID-BLUEBERRY", @"D:\Models\a.gguf"));
         Assert.Throws<IOException>(() => resolver.Resolve("ID-BLUEBERRY", @"C:\missing.txt"));
+        var longPath = @"\\?\D:\" + new string('x', 270) + @"\file.bin";
+        Assert.Equal(@"\\ID-BLUEBERRY\ID-BLUEBERRY_D\" + new string('x', 270) + @"\file.bin", resolver.Resolve("ID-BLUEBERRY", longPath));
     }
 
     [Fact]
