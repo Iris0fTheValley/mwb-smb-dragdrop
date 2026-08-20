@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+*.suo
+PowerToys-main*.zip
+PowerToys-main*.tar.gz
+test-raw.cs
+test-json.cs
+src/**/bin/
+src/**/obj/
