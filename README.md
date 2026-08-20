@@ -27,7 +27,7 @@ Build/test commands must run on the physical machine containing the source. On P
 dotnet test EnhancedDragDrop.Tests\EnhancedDragDrop.Tests.csproj
 ```
 
-The focused test suite currently passes 7/7, including a real UNC streaming-backend smoke when run on PC-B. A complete PowerToys MWB build requires the full upstream PowerToys checkout; this repository includes the focused MWB source snapshot and does not claim to replace that checkout.
+The focused test suite currently passes 7/7, including a real UNC streaming-backend smoke when run on PC-B. The complete upstream PowerToys checkout was restored and NuGet restore completed, but the MWB build is blocked on PC-B before C# compilation because the Visual Studio C++ MSBuild toolset is not installed (`Microsoft.Cpp.Default.props` is missing for upstream native project references). Install the PowerToys developer prerequisites before building the integrated MWB binary.
 
 ## Run and rollback
 
