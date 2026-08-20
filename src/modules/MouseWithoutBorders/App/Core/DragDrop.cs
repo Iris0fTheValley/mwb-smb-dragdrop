@@ -211,6 +211,7 @@ internal static class DragDrop
                     {
                         MachineStuff.dropMachineID = MachineStuff.newDesMachineID;
                     }
+
                     EnhancedDragDropAdapter.BeginLocalDrag(Common.MachineName, validPaths, MachineStuff.dropMachineID);
 
                     DragDropStep06();
@@ -245,6 +246,7 @@ internal static class DragDrop
             Logger.LogDebug("DragDropStep06: enhanced SMB manifest owns the drag; skip legacy file-drop packages.");
             return;
         }
+
         Logger.LogDebug("DragDropStep06: SendClipboardBeatDragDrop");
         SendClipboardBeatDragDrop();
         SendDropBegin();

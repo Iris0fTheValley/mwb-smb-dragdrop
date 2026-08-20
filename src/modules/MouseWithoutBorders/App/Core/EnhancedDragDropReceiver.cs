@@ -1,3 +1,8 @@
+// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,6 +16,8 @@ using System.Windows.Forms;
 
 namespace MouseWithoutBorders.Core;
 
+#pragma warning disable SA1107, SA1132, SA1134, SA1501, SA1502, SA1503, SA1513, SA1516, SA1520
+
 /// <summary>
 /// Reassembles manifest chunks and owns the target-machine Explorer overlay.
 /// The transfer starts only after a visible filesystem target receives MouseUp.
@@ -23,7 +30,7 @@ internal static class EnhancedDragDropReceiver
     private const int MaxManifestBytes = 2 * 1024 * 1024;
     private static readonly ConcurrentDictionary<Guid, ChunkAssembly> Assemblies = new();
     private static readonly object SessionLock = new();
-    private static OverlaySession? session;
+    private static OverlaySession session;
     internal static bool IsActive => !Assemblies.IsEmpty || session is not null;
 
     internal static void ReceiveChunk(DATA package)
@@ -200,19 +207,30 @@ internal static class EnhancedDragDropReceiver
                 try
                 {
                     var source = ResolveSourcePath(manifest.SourceMachine, item.LocalPath);
+                    Logger.LogDebug("RemoteDrag source resolved: " + source);
                     var destination = Path.Combine(targetDirectory, Path.GetFileName(Path.TrimEndingDirectorySeparator(source)));
                     if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("Destination already exists: " + destination);
-                    if (File.Exists(source))
+                    var attributes = File.GetAttributes(source);
+                    if ((attributes & FileAttributes.Directory) == 0)
                     {
-                    await CopyFileAsync(source, destination, transferCancellation.Token).ConfigureAwait(false);
+                        await CopyFileAsync(source, destination, transferCancellation.Token).ConfigureAwait(false);
                     }
-                    else if (Directory.Exists(source))
+                    else
                     {
                         await CopyDirectoryAsync(source, destination, transferCancellation.Token).ConfigureAwait(false);
                     }
-                    else throw new FileNotFoundException("Source item is unavailable over SMB.", source);
                     copied++;
                     Logger.LogDebug("Transfer completed: " + source + " -> " + destination);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    failures.Add("SMB access denied: " + ex.Message);
+                    Logger.Log("Transfer failed: SMB access denied. " + ex.Message);
+                }
+                catch (FileNotFoundException ex)
+                {
+                    failures.Add("Source item is unavailable over SMB: " + ex.FileName);
+                    Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.FileName);
                 }
                 catch (Exception ex)
                 {
@@ -294,7 +312,7 @@ internal static class EnhancedDragDropReceiver
 
         private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath);
 
-        private sealed class OverlayForm : Form
+        private sealed class OverlayForm : System.Windows.Forms.Form
         {
             private readonly ExplorerTarget target;
             private readonly Action<ExplorerTarget> onDrop;

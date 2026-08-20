@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -5,7 +9,11 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 
+using MouseWithoutBorders.Class;
+
 namespace MouseWithoutBorders.Core;
+
+#pragma warning disable SA1107, SA1132, SA1134, SA1501, SA1502, SA1503, SA1513, SA1516, SA1520
 
 /// <summary>
 /// Source-side bridge for enhanced Explorer drag/drop. Only a JSON manifest is
