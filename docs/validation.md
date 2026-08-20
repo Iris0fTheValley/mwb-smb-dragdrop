@@ -13,7 +13,7 @@ Covered cases include single and many-item manifests, mixed files/folders, Unico
 
 The seventh test ran the streaming backend against a real UNC source on PC-B (`\\192.168.1.7\ID-BLUEBERRY_C\AgentWork\mwb-smb-smoke-source\中文-テスト.txt`) and wrote the result to the PC-B local SSD.
 
-Latest rerun: the six deterministic tests passed. The optional UNC smoke test was not executed because `MWB_SMB_SMOKE_SOURCE` and `MWB_SMB_SMOKE_TARGET` were not configured in that shell; it is intentionally not counted as a pass.
+Latest rerun: the six deterministic tests passed. A subsequent run configured `MWB_SMB_SMOKE_SOURCE` to the authorized PC-B UNC share and `MWB_SMB_SMOKE_TARGET` to a fresh local directory; the real UNC streaming test passed and produced the 9-byte Unicode fixture. An earlier shell without those variables did not execute the optional smoke test and is not counted as a pass.
 
 ## SMB smoke
 
