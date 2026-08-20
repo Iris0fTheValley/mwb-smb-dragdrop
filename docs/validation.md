@@ -28,3 +28,9 @@ This is an environment authorization blocker, not a mouse-crossing or overlay fa
 The complete upstream PowerToys checkout was then restored on PC-B and NuGet restore completed. Visual Studio Build Tools were installed and the official MWB project build was retried with x64 settings. The build passes the original `Microsoft.Cpp.Default.props` blocker, but remains blocked in the upstream native toolchain layer by the v145/v143 toolset and Spectre/C++ task-host compatibility requirements described in `docs/build-blocker.md`. No application code or system configuration was changed to hide these failures.
 
 Manual testing confirmed ordinary mouse crossing and the A-to-B enhanced overlay path. A->B/B->A file-copy acceptance and large-file throughput remain unverified until the integrated build is rebuilt and the reverse share ACL/interactive-account issue is corrected.
+
+## Process recovery (2026-08-21)
+
+The one-click manager at `scripts/Manage-MwbEnhanced.ps1` was verified with `status`, `stop`, `start`, and `restart`. It stops only the binaries under the configured enhanced install directory, starts both machines in interactive Session 1, rejects Session 0 launches, and removes its temporary scheduled task after the remote process is running. During recovery, PC-B's interactive-user settings were restored from its existing SYSTEM profile because the user profile had an empty machine matrix; the prior user settings were preserved as a timestamped backup on PC-B.
+
+After recovery, both logs reported the expected paired machine matrix, `Machine updated` for the peer, and `AtLeastOneSocketEstablished returning true`. TCP 15102 was established in both directions. This restores the original cross-screen mouse path without changing its state machine.

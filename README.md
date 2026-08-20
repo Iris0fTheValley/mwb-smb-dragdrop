@@ -37,6 +37,15 @@ The target MWB process must run in the logged-on interactive user context that h
 
 The original mouse, keyboard, clipboard, and screen-switching paths are unchanged. To roll back only the enhancement, deploy the unmodified upstream MWB binaries; no registry, service, or installed PowerToys package is modified by this repository.
 
+For a controlled two-machine restart, run the management script from an elevated PowerShell on PC-A:
+
+```powershell
+.\scripts\Manage-MwbEnhanced.ps1 -Action status
+.\scripts\Manage-MwbEnhanced.ps1 -Action restart
+```
+
+The default remote target is the existing `pc-b` SSH alias and the default interactive account is `ID-BLUEBERRY\12298`. Override `-RemoteHost`, `-RemoteInteractiveUser`, or either install directory when deploying elsewhere. The script matches the exact enhanced-binary paths, starts the remote process through the logged-on interactive session, verifies that it is not Session 0, and supports `status`, `start`, `stop`, and `restart`.
+
 ## License
 
 The added code is MIT licensed. The MWB snapshot retains the Microsoft PowerToys license headers and is derived from `microsoft/PowerToys`.
