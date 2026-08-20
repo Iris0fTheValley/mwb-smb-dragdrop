@@ -342,6 +342,15 @@ internal static class DragDrop
         });
     }
 
+    internal static void DragDropStepEnhancedCancel()
+    {
+        EnhancedDragDropAdapter.Cancel();
+        IsDropping = false;
+        IsDragging = false;
+        Clipboard.LastIDWithClipboardData = ID.NONE;
+        Clipboard.LastDragDropFile = null;
+    }
+
     private static void SendCheckExplorerDragDrop()
     {
         DATA package = new();

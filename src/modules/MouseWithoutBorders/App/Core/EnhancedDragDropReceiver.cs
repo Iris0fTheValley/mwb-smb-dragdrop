@@ -74,7 +74,7 @@ internal static class EnhancedDragDropReceiver
             {
                 throw new FormatException("RemoteDrag manifest validation failed.");
             }
-            Common.DoSomethingInUIThread(() => BeginOverlay(manifest));
+            Common.DoSomethingInUIThread(() => BeginOverlay(package.Src, manifest));
             Logger.LogDebug($"RemoteDrag manifest received: DragId={dragId}, SourceMachine={manifest.SourceMachine}, ItemCount={manifest.Items.Count}");
         }
         catch (Exception ex)
@@ -89,12 +89,12 @@ internal static class EnhancedDragDropReceiver
         Assemblies.Clear();
     }
 
-    private static void BeginOverlay(RemoteDragManifest manifest)
+    private static void BeginOverlay(ID sourceId, RemoteDragManifest manifest)
     {
         lock (SessionLock)
         {
             CloseOverlay();
-            session = new OverlaySession(manifest);
+            session = new OverlaySession(sourceId, manifest);
             session.Show();
         }
     }
@@ -147,11 +147,16 @@ internal static class EnhancedDragDropReceiver
     private sealed class OverlaySession : IDisposable
     {
         private readonly RemoteDragManifest manifest;
+        private readonly ID sourceId;
         private readonly List<OverlayForm> forms = new();
         private readonly CancellationTokenSource transferCancellation = new();
         private bool completed;
 
-        internal OverlaySession(RemoteDragManifest manifest) => this.manifest = manifest;
+        internal OverlaySession(ID sourceId, RemoteDragManifest manifest)
+        {
+            this.sourceId = sourceId;
+            this.manifest = manifest;
+        }
 
         internal void Show()
         {
@@ -181,6 +186,8 @@ internal static class EnhancedDragDropReceiver
             completed = true;
             CloseForms();
             transferCancellation.Cancel();
+            Common.SendPackage(sourceId, PackageType.EnhancedDragCancel);
+            CloseOverlay();
             Logger.LogDebug("RemoteDrag cancelled.");
         }
 

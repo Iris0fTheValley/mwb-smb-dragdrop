@@ -362,6 +362,11 @@ internal static class Receiver
                 EnhancedDragDropReceiver.ReceiveChunk(package);
                 break;
 
+            case PackageType.EnhancedDragCancel:
+                EnhancedDragDropReceiver.Cancel();
+                DragDrop.DragDropStepEnhancedCancel();
+                break;
+
             case PackageType.ClipboardText:
             case PackageType.ClipboardImage:
                 Clipboard.clipboardCopiedTime = 0;
