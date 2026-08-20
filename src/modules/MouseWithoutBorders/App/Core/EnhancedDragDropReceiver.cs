@@ -24,6 +24,7 @@ internal static class EnhancedDragDropReceiver
     private static readonly ConcurrentDictionary<Guid, ChunkAssembly> Assemblies = new();
     private static readonly object SessionLock = new();
     private static OverlaySession? session;
+    internal static bool IsActive => !Assemblies.IsEmpty || session is not null;
 
     internal static void ReceiveChunk(DATA package)
     {
