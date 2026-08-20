@@ -242,10 +242,11 @@ internal static class EnhancedDragDropReceiver
         private static string ResolveSourcePath(string machine, string localPath)
         {
             var fullPath = Path.GetFullPath(localPath);
-            var root = Path.GetPathRoot(fullPath)?.TrimEnd('\\') ?? throw new IOException("Source path has no drive root.");
+            var pathForMapping = fullPath.StartsWith("\\\\?\\", StringComparison.Ordinal) ? fullPath[4..] : fullPath;
+            var root = Path.GetPathRoot(pathForMapping)?.TrimEnd('\\') ?? throw new IOException("Source path has no drive root.");
             if (root.Length != 2 || root[1] != ':') throw new IOException("Only local drive paths are supported.");
             var share = machine + "_" + root[0];
-            var relative = fullPath[Path.GetPathRoot(fullPath)!.Length..].TrimStart('\\');
+            var relative = pathForMapping[Path.GetPathRoot(pathForMapping)!.Length..].TrimStart('\\');
             return string.IsNullOrEmpty(relative) ? $"\\\\{machine}\\{share}" : $"\\\\{machine}\\{share}\\{relative}";
         }
 
