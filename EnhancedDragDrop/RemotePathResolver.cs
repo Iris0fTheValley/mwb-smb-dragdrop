@@ -25,12 +25,13 @@ public sealed class SharePathResolver : IRemotePathResolver
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceMachine);
         ArgumentException.ThrowIfNullOrWhiteSpace(localPath);
         var fullPath = Path.GetFullPath(localPath);
-        if (!Path.IsPathFullyQualified(fullPath) || fullPath.StartsWith("\\\\", StringComparison.Ordinal))
+        var pathForMapping = fullPath.StartsWith("\\\\?\\", StringComparison.Ordinal) ? fullPath[4..] : fullPath;
+        if (!Path.IsPathFullyQualified(pathForMapping) || pathForMapping.StartsWith("\\\\", StringComparison.Ordinal))
             throw new IOException($"Only source-local drive paths can be resolved: {localPath}");
-        var root = NormalizeRoot(Path.GetPathRoot(fullPath) ?? throw new IOException($"No drive root in {localPath}"));
+        var root = NormalizeRoot(Path.GetPathRoot(pathForMapping) ?? throw new IOException($"No drive root in {localPath}"));
         if (!sharesByRoot.TryGetValue(root, out var shareName))
             throw new IOException($"No configured SMB share for source drive {root}.");
-        var relative = fullPath[root.Length..].TrimStart('\\');
+        var relative = pathForMapping[root.Length..].TrimStart('\\');
         return string.IsNullOrEmpty(relative)
             ? $"\\\\{sourceMachine}\\{shareName}"
             : $"\\\\{sourceMachine}\\{shareName}\\{relative}";
