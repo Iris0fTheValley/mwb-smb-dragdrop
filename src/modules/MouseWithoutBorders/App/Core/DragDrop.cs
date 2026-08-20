@@ -240,6 +240,11 @@ internal static class DragDrop
     private static void DragDropStep06()
     {
         IsDragging = true;
+        if (EnhancedDragDropAdapter.IsActive)
+        {
+            Logger.LogDebug("DragDropStep06: enhanced SMB manifest owns the drag; skip legacy file-drop packages.");
+            return;
+        }
         Logger.LogDebug("DragDropStep06: SendClipboardBeatDragDrop");
         SendClipboardBeatDragDrop();
         SendDropBegin();
@@ -263,7 +268,7 @@ internal static class DragDrop
 
     internal static void DragDropStep09(int wParam)
     {
-        if (wParam == WM.WM_MOUSEMOVE && IsDropping)
+        if (wParam == WM.WM_MOUSEMOVE && IsDropping && !EnhancedDragDropReceiver.IsActive)
         {
             // Show/Move form
             Common.DoSomethingInUIThread(() =>
