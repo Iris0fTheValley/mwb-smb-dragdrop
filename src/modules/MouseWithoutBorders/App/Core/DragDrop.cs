@@ -299,7 +299,15 @@ internal static class DragDrop
         });
 
         PowerToysTelemetry.Log.WriteEvent(new MouseWithoutBorders.Telemetry.MouseWithoutBordersDragAndDropEvent());
-        Clipboard.GetRemoteClipboard("desktop");
+        if (EnhancedDragDropAdapter.IsActive || EnhancedDragDropReceiver.IsActive)
+        {
+            Logger.LogDebug("DragDropStep10: enhanced SMB drag owns MouseUp; skip legacy clipboard transfer.");
+            EnhancedDragDropAdapter.Cancel();
+        }
+        else
+        {
+            Clipboard.GetRemoteClipboard("desktop");
+        }
     }
 
     internal static void DragDropStep11()
@@ -311,6 +319,8 @@ internal static class DragDrop
         DragMachine = (ID)1;
         Clipboard.LastIDWithClipboardData = ID.NONE;
         Clipboard.LastDragDropFile = null;
+        EnhancedDragDropAdapter.Cancel();
+        EnhancedDragDropReceiver.Cancel();
         MouseDown = false;
     }
 

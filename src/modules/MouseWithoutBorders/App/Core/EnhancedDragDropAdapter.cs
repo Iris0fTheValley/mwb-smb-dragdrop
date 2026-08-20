@@ -16,6 +16,7 @@ internal static class EnhancedDragDropAdapter
     private const int ChunkBytes = 20;
 
     internal static Guid ActiveDragId { get; private set; }
+    internal static bool IsActive => ActiveDragId != Guid.Empty;
 
     internal static void BeginLocalDrag(string sourceMachine, IReadOnlyList<string> paths, ID destination)
     {
