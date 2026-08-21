@@ -212,15 +212,27 @@ internal static class EnhancedDragDropReceiver
         {
             var copied = 0;
             var failures = new List<string>();
+            var sourceAccessFailed = false;
             foreach (var item in manifest.Items)
             {
+                var sourceProbeCompleted = false;
                 try
                 {
                     var source = ResolveSourcePath(manifest.SourceMachine, item.LocalPath);
                     Logger.LogDebug("RemoteDrag source resolved: " + source);
+                    var attributes = File.GetAttributes(source);
+
+                    // Probe the source before creating the destination. Windows can report
+                    // SMB authentication/share failures as IOException rather than
+                    // UnauthorizedAccessException (for example, ERROR_LOGON_FAILURE).
+                    // Those failures must use the source-side push fallback.
+                    if ((attributes & FileAttributes.Directory) == 0)
+                    {
+                        await using var probe = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+                    }
+                    sourceProbeCompleted = true;
                     var destination = Path.Combine(targetDirectory, Path.GetFileName(Path.TrimEndingDirectorySeparator(source)));
                     if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("Destination already exists: " + destination);
-                    var attributes = File.GetAttributes(source);
                     if ((attributes & FileAttributes.Directory) == 0)
                     {
                         await CopyFileAsync(source, destination, transferCancellation.Token).ConfigureAwait(false);
@@ -232,15 +244,23 @@ internal static class EnhancedDragDropReceiver
                     copied++;
                     Logger.LogDebug("Transfer completed: " + source + " -> " + destination);
                 }
-                catch (UnauthorizedAccessException ex)
+                catch (UnauthorizedAccessException ex) when (!sourceProbeCompleted)
                 {
+                    sourceAccessFailed = true;
                     failures.Add("SMB access denied: " + ex.Message);
                     Logger.Log("Transfer failed: SMB access denied. " + ex.Message);
                 }
-                catch (FileNotFoundException ex)
+                catch (FileNotFoundException ex) when (!sourceProbeCompleted)
                 {
+                    sourceAccessFailed = true;
                     failures.Add("Source item is unavailable over SMB: " + ex.FileName);
                     Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.FileName);
+                }
+                catch (IOException ex) when (!sourceProbeCompleted && IsLikelySourceAccessFailure(ex))
+                {
+                    sourceAccessFailed = true;
+                    failures.Add("Source item is unavailable over SMB: " + ex.Message);
+                    Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.Message);
                 }
                 catch (Exception ex)
                 {
@@ -248,13 +268,21 @@ internal static class EnhancedDragDropReceiver
                     Logger.Log("Transfer failed: " + ex.Message);
                 }
             }
-            if (copied == 0 && failures.Any(failure => failure.StartsWith("SMB access denied:", StringComparison.Ordinal) || failure.StartsWith("Source item is unavailable over SMB:", StringComparison.Ordinal)))
+            if (copied == 0 && sourceAccessFailed)
             {
                 RequestSourcePush(targetDirectory);
                 return;
             }
 
             Common.ShowToolTip(failures.Count == 0 ? $"Remote drag complete ({copied} item(s))." : $"Remote drag: {copied} copied, {failures.Count} failed.", 4000, failures.Count == 0 ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+        }
+
+        private static bool IsLikelySourceAccessFailure(IOException exception)
+        {
+            // Network-path authentication and share errors are surfaced by .NET as
+            // IOException. A destination conflict is rejected before the source probe,
+            // so IOException from the probe is safe to classify as source access here.
+            return exception is not DirectoryNotFoundException;
         }
 
         private void RequestSourcePush(string targetDirectory)
