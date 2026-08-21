@@ -93,8 +93,11 @@ internal static class EnhancedDragDropAdapter
         {
             LocalPath = fullPath,
             IsDirectory = true,
-            SizeBytes = GetSizeBytes(fullPath),
-            FileCount = GetFileCount(fullPath),
+
+            // Windows Shell owns recursive enumeration and progress reporting.
+            // Avoid walking a directory before the manifest is sent.
+            SizeBytes = 0,
+            FileCount = 0,
         };
     }
 
@@ -145,18 +148,6 @@ internal static class EnhancedDragDropAdapter
                 activeTransferCancellation = null;
             }
         }
-    }
-
-    private static long GetSizeBytes(string path)
-    {
-        try { return Directory.Exists(path) ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(file => new FileInfo(file).Length) : new FileInfo(path).Length; }
-        catch { return 0; }
-    }
-
-    private static int GetFileCount(string path)
-    {
-        try { return Directory.Exists(path) ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Count() : 1; }
-        catch { return 1; }
     }
 
     private static string ResolveTargetDirectory(string machine, string targetDirectory)
