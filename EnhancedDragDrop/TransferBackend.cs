@@ -16,6 +16,11 @@ public sealed record TransferReport(IReadOnlyList<string> Copied, IReadOnlyList<
 public sealed record TransferFailure(string SourcePath, string Error);
 
 /// <summary>Streaming managed copy backend. SMB handles the actual network transport for UNC sources.</summary>
+/// <summary>
+/// Deterministic test/fixture backend for the standalone net8 model. The
+/// integrated Mouse Without Borders path does not use this backend; it uses
+/// Windows Shell IFileOperation instead.
+/// </summary>
 public sealed class StreamingFileTransferBackend : IFileTransferBackend
 {
     private const int BufferSize = 1024 * 1024;
