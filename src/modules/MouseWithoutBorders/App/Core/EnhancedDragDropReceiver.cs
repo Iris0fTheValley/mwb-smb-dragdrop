@@ -402,6 +402,7 @@ internal static class EnhancedDragDropReceiver
             private readonly Action onCancel;
             private ExplorerTarget target;
             private bool isHovered;
+            private nint zOrderAnchor;
             internal nint TargetHwnd => target.Hwnd;
             internal Rectangle TargetBounds { get; private set; }
             internal OverlayForm(ExplorerTarget target, Rectangle bounds, Action<ExplorerTarget> onDrop, Action onCancel)
@@ -410,12 +411,14 @@ internal static class EnhancedDragDropReceiver
                 this.onDrop = onDrop;
                 this.onCancel = onCancel;
                 TargetBounds = bounds;
+                zOrderAnchor = GetWindow(target.Hwnd, GW_HWNDPREV);
                 Bounds = bounds;
                 FormBorderStyle = FormBorderStyle.None;
                 ShowInTaskbar = false;
                 TopMost = false;
                 KeyPreview = true;
                 SetStyle(ControlStyles.Selectable, false);
+                SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
                 BackColor = Color.DeepSkyBlue;
                 Opacity = 0.18;
                 MouseEnter += (_, _) => SetHoverState(true);
@@ -430,14 +433,20 @@ internal static class EnhancedDragDropReceiver
             {
                 var boundsChanged = TargetBounds != bounds;
                 var contentChanged = target.DisplayName != next.DisplayName || target.FolderPath != next.FolderPath || target.Dpi != next.Dpi;
+                var nextZOrderAnchor = GetWindow(next.Hwnd, GW_HWNDPREV);
+                var zOrderChanged = zOrderAnchor != nextZOrderAnchor;
                 target = next;
+                zOrderAnchor = nextZOrderAnchor;
                 if (boundsChanged)
                 {
                     TargetBounds = bounds;
                     Bounds = bounds;
+                }
+                if (boundsChanged || zOrderChanged)
+                {
                     PlaceAboveExplorer();
                 }
-                if (boundsChanged || contentChanged)
+                if (contentChanged)
                 {
                     Invalidate();
                 }
@@ -469,7 +478,11 @@ internal static class EnhancedDragDropReceiver
             {
                 if (IsHandleCreated)
                 {
-                    var insertAfter = GetWindow(target.Hwnd, GW_HWNDPREV);
+                    var insertAfter = zOrderAnchor;
+                    if (insertAfter == Handle)
+                    {
+                        insertAfter = GetWindow(insertAfter, GW_HWNDPREV);
+                    }
                     if (insertAfter == 0)
                     {
                         insertAfter = HWND_TOP;
