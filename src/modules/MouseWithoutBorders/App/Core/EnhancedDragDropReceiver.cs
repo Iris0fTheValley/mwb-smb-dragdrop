@@ -189,7 +189,17 @@ internal static class EnhancedDragDropReceiver
         internal void Show()
         {
             RefreshTargets();
-            refreshTimer.Tick += (_, _) => RefreshTargets();
+            refreshTimer.Tick += (_, _) =>
+            {
+                try
+                {
+                    RefreshTargets();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("RemoteDrag overlay refresh failed: " + ex.Message);
+                }
+            };
             refreshTimer.Start();
             if (forms.Count == 0)
             {
@@ -329,27 +339,27 @@ internal static class EnhancedDragDropReceiver
         {
             if (completed) return;
             var targets = DiscoverTargets();
-            var desired = targets.Select(target => (target, bounds: target.Bounds)).ToArray();
+            var desired = targets.ToDictionary(target => target.Hwnd);
             for (var index = forms.Count - 1; index >= 0; index--)
             {
-                if (!desired.Any(value => value.target.Hwnd == forms[index].TargetHwnd && value.bounds == forms[index].TargetBounds))
+                if (!desired.ContainsKey(forms[index].TargetHwnd))
                 {
                     forms[index].Close();
                     forms.RemoveAt(index);
                 }
             }
-            foreach (var value in desired)
+            foreach (var target in desired.Values)
             {
-                var form = forms.FirstOrDefault(candidate => candidate.TargetHwnd == value.target.Hwnd && candidate.TargetBounds == value.bounds);
+                var form = forms.FirstOrDefault(candidate => candidate.TargetHwnd == target.Hwnd);
                 if (form is null)
                 {
-                    form = new OverlayForm(value.target, value.bounds, OnDrop, OnCancel);
+                    form = new OverlayForm(target, target.Bounds, OnDrop, OnCancel);
                     forms.Add(form);
                     form.Show();
                 }
                 else
                 {
-                    form.RefreshTarget(value.target, value.bounds);
+                    form.RefreshTarget(target, target.Bounds);
                 }
             }
         }
@@ -380,12 +390,6 @@ internal static class EnhancedDragDropReceiver
                 }
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
-            var desktop = GetDesktopWindow();
-            if (desktop != 0 && TryGetActualWindowRect(desktop, out var desktopRect))
-            {
-                var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), desktopPath, "Desktop", GetDpiForWindow(desktop)));
-            }
             Logger.LogDebug("ExplorerTargets discovered: " + string.Join("; ", targets.Select(target => $"{target.Hwnd}:{target.DisplayName}:{target.FolderPath}:{target.Bounds}")));
             return targets;
         }
@@ -397,6 +401,7 @@ internal static class EnhancedDragDropReceiver
             private readonly Action<ExplorerTarget> onDrop;
             private readonly Action onCancel;
             private ExplorerTarget target;
+            private bool isHovered;
             internal nint TargetHwnd => target.Hwnd;
             internal Rectangle TargetBounds { get; private set; }
             internal OverlayForm(ExplorerTarget target, Rectangle bounds, Action<ExplorerTarget> onDrop, Action onCancel)
@@ -413,8 +418,8 @@ internal static class EnhancedDragDropReceiver
                 SetStyle(ControlStyles.Selectable, false);
                 BackColor = Color.DeepSkyBlue;
                 Opacity = 0.18;
-                MouseEnter += (_, _) => { BackColor = Color.LimeGreen; Opacity = 0.32; Invalidate(); };
-                MouseLeave += (_, _) => { BackColor = Color.DeepSkyBlue; Opacity = 0.18; };
+                MouseEnter += (_, _) => SetHoverState(true);
+                MouseLeave += (_, _) => SetHoverState(false);
                 MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) onDrop(target); else if (e.Button == MouseButtons.Right) onCancel(); };
                 KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) onCancel(); };
                 Paint += (_, e) => { using var pen = new Pen(Color.White, 3); e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3); TextRenderer.DrawText(e.Graphics, $"{target.DisplayName} / 目录\r\n{target.FolderPath}\r\nDPI {target.Dpi}", Font, new Rectangle(12, 12, Math.Max(20, Width - 24), Math.Max(20, Height - 24)), Color.White, Color.FromArgb(160, 20, 20, 20)); };
@@ -423,10 +428,27 @@ internal static class EnhancedDragDropReceiver
 
             internal void RefreshTarget(ExplorerTarget next, Rectangle bounds)
             {
+                var boundsChanged = TargetBounds != bounds;
+                var contentChanged = target.DisplayName != next.DisplayName || target.FolderPath != next.FolderPath || target.Dpi != next.Dpi;
                 target = next;
-                TargetBounds = bounds;
-                if (Bounds != bounds) Bounds = bounds;
-                PlaceAboveExplorer();
+                if (boundsChanged)
+                {
+                    TargetBounds = bounds;
+                    Bounds = bounds;
+                    PlaceAboveExplorer();
+                }
+                if (boundsChanged || contentChanged)
+                {
+                    Invalidate();
+                }
+            }
+
+            private void SetHoverState(bool hovered)
+            {
+                if (isHovered == hovered) return;
+                isHovered = hovered;
+                BackColor = hovered ? Color.LimeGreen : Color.DeepSkyBlue;
+                Opacity = hovered ? 0.32 : 0.18;
                 Invalidate();
             }
 
@@ -447,7 +469,13 @@ internal static class EnhancedDragDropReceiver
             {
                 if (IsHandleCreated)
                 {
-                    _ = SetWindowPos(Handle, target.Hwnd, Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    var insertAfter = GetWindow(target.Hwnd, GW_HWNDPREV);
+                    if (insertAfter == 0)
+                    {
+                        insertAfter = HWND_TOP;
+                    }
+
+                    _ = SetWindowPos(Handle, insertAfter, Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
                 }
             }
         }
@@ -457,9 +485,11 @@ internal static class EnhancedDragDropReceiver
         [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
         [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hWnd, uint attribute, out NativeRect value, int valueSize);
-        [DllImport("user32.dll")] private static extern nint GetDesktopWindow();
         [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hWnd);
+        [DllImport("user32.dll")] private static extern nint GetWindow(nint hWnd, uint command);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+        private const uint GW_HWNDPREV = 3;
+        private static readonly nint HWND_TOP = 0;
         private const uint SWP_NOACTIVATE = 0x0010;
         private const uint SWP_SHOWWINDOW = 0x0040;
         private const uint DWMWA_EXTENDED_FRAME_BOUNDS = 9;
