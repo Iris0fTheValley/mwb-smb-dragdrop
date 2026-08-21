@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -147,7 +148,8 @@ internal static class EnhancedDragDropAdapter
         var fullPath = Path.GetFullPath(targetDirectory);
         var root = Path.GetPathRoot(fullPath)?.TrimEnd('\\') ?? throw new IOException("Target path has no drive root.");
         if (root.Length != 2 || root[1] != ':') throw new IOException("Only local drive targets are supported.");
-        var address = Common.GetConnectedIPv4AddressFor(machine);
+        var address = Common.GetConnectedIPv4AddressFor(machine)
+            ?? Dns.GetHostAddresses(machine).FirstOrDefault(candidate => candidate.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
         var host = address?.ToString() ?? machine;
         var share = machine + "_" + root[0];
         var relative = fullPath[Path.GetPathRoot(fullPath)!.Length..].TrimStart('\\');
