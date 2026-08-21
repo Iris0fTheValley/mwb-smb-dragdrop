@@ -3,10 +3,12 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -133,6 +135,10 @@ internal static class DragDrop
     {
         if (!IsDropping)
         {
+            // Keep the source Explorer in view before the helper is shown. The
+            // helper normally reports the dragged paths through DragEnter, but
+            // that event can be lost when the source is on the remote desktop.
+            var sourceForeground = NativeMethods.GetForegroundWindow();
             IntPtr h = (IntPtr)NativeMethods.FindWindow(null, Helper.HELPER_FORM_TEXT);
             if (h.ToInt32() > 0)
             {
@@ -163,6 +169,26 @@ internal static class DragDrop
 
                     // if (GetText(h).Length > 1) break;
                 }
+
+                // Preserve the existing helper/IPC path as the primary path.
+                // If it did not deliver a file list, recover the current
+                // Explorer selection once so the reverse direction can still
+                // produce the enhanced manifest. This is intentionally scoped
+                // to the ExplorerDragDrop handshake above; it does not run for
+                // ordinary mouse movement or outside Explorer.
+                if (Volatile.Read(ref dragDropStep05ExCalledByIpc) == 0)
+                {
+                    var selectedPaths = TryGetSelectedExplorerPaths(sourceForeground);
+                    if (selectedPaths.Length > 0)
+                    {
+                        Logger.LogDebug("DragDropStep04: Helper DragEnter was not received; using selected Explorer paths: " + string.Join(";", selectedPaths));
+                        DragDropStep05Ex(selectedPaths);
+                    }
+                    else
+                    {
+                        Logger.LogDebug("DragDropStep04: Helper DragEnter was not received and no selected Explorer paths were found.");
+                    }
+                }
             }
             else
             {
@@ -175,6 +201,112 @@ internal static class DragDrop
         }
 
         Logger.LogDebug("DragDropStep04: Got WM_CHECK_EXPLORER_DRAG_DROP, done with processing jump to DragDropStep05...");
+    }
+
+    private static string[] TryGetSelectedExplorerPaths(IntPtr preferredHwnd)
+    {
+        object shell = null;
+        object windows = null;
+        var preferred = new List<string>();
+        var fallback = new List<string>();
+        try
+        {
+            var shellType = Type.GetTypeFromProgID("Shell.Application");
+            if (shellType is null)
+            {
+                return Array.Empty<string>();
+            }
+
+            shell = Activator.CreateInstance(shellType);
+            dynamic shellObject = shell;
+            windows = shellObject.Windows();
+            dynamic windowsObject = windows;
+            var count = Convert.ToInt32(windowsObject.Count, CultureInfo.InvariantCulture);
+            for (var index = 0; index < count; index++)
+            {
+                object window = null;
+                object document = null;
+                object selectedItems = null;
+                try
+                {
+                    window = windowsObject.Item(index);
+                    dynamic windowObject = window;
+                    var hwnd = IntPtr.Zero;
+                    try
+                    {
+                        hwnd = new IntPtr(Convert.ToInt64(windowObject.HWND, CultureInfo.InvariantCulture));
+                    }
+                    catch
+                    {
+                        // Some shell namespace windows do not expose HWND.
+                    }
+
+                    document = windowObject.Document;
+                    dynamic documentObject = document;
+                    selectedItems = documentObject.SelectedItems();
+                    dynamic selectedObject = selectedItems;
+                    var selectedCount = Convert.ToInt32(selectedObject.Count, CultureInfo.InvariantCulture);
+                    for (var selectedIndex = 0; selectedIndex < selectedCount; selectedIndex++)
+                    {
+                        object item = null;
+                        try
+                        {
+                            item = selectedObject.Item(selectedIndex);
+                            dynamic itemObject = item;
+                            var path = itemObject.Path as string;
+                            if (string.IsNullOrWhiteSpace(path) || (!File.Exists(path) && !Directory.Exists(path)))
+                            {
+                                continue;
+                            }
+
+                            var destination = hwnd == preferredHwnd ? preferred : fallback;
+                            if (!destination.Contains(path, StringComparer.OrdinalIgnoreCase))
+                            {
+                                destination.Add(path);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.LogDebug("DragDropStep04: selected Explorer item skipped: " + ex.Message);
+                        }
+                        finally
+                        {
+                            ReleaseComObject(item);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug("DragDropStep04: Explorer selection lookup skipped: " + ex.Message);
+                }
+                finally
+                {
+                    ReleaseComObject(selectedItems);
+                    ReleaseComObject(document);
+                    ReleaseComObject(window);
+                }
+            }
+
+            return (preferred.Count > 0 ? preferred : fallback).ToArray();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug("DragDropStep04: Explorer selection lookup failed: " + ex.Message);
+            return Array.Empty<string>();
+        }
+        finally
+        {
+            ReleaseComObject(windows);
+            ReleaseComObject(shell);
+        }
+    }
+
+    private static void ReleaseComObject(object value)
+    {
+        if (value is not null && Marshal.IsComObject(value))
+        {
+            Marshal.FinalReleaseComObject(value);
+        }
     }
 
     internal static void DragDropStep05Ex(string dragFileName)
