@@ -1221,6 +1221,24 @@ internal static class Common
         return null;
     }
 
+    internal static IPAddress GetConnectedIPv4AddressFor(string machineName)
+    {
+        SocketStuff sk = Common.Sk;
+
+        if (sk != null)
+        {
+            lock (sk.TcpSocketsLock)
+            {
+                return sk.TcpSockets.FirstOrDefault(t => t != null && t.Status == SocketStatus.Connected
+                        && t.Address?.AddressFamily == AddressFamily.InterNetwork
+                        && t.MachineName.Equals(machineName, StringComparison.OrdinalIgnoreCase))
+                        ?.Address;
+            }
+        }
+
+        return null;
+    }
+
     internal static bool IsConnectingByAClientSocketTo(string machineName, IPAddress ip)
     {
         SocketStuff sk = Common.Sk;

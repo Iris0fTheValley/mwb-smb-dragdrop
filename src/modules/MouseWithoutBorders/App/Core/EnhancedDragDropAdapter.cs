@@ -147,7 +147,8 @@ internal static class EnhancedDragDropAdapter
         var fullPath = Path.GetFullPath(targetDirectory);
         var root = Path.GetPathRoot(fullPath)?.TrimEnd('\\') ?? throw new IOException("Target path has no drive root.");
         if (root.Length != 2 || root[1] != ':') throw new IOException("Only local drive targets are supported.");
-        var host = Common.GetConnectedSocketIPAddressFor(machine)?.ToString() ?? machine;
+        var address = Common.GetConnectedIPv4AddressFor(machine);
+        var host = address?.ToString() ?? machine;
         var share = machine + "_" + root[0];
         var relative = fullPath[Path.GetPathRoot(fullPath)!.Length..].TrimStart('\\');
         var basePath = string.IsNullOrEmpty(relative) ? $"\\\\{host}\\{share}" : $"\\\\{host}\\{share}\\{relative}";
