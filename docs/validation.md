@@ -6,10 +6,10 @@ Previous run on PC-B (physical source/build machine):
 
 ```text
 dotnet test EnhancedDragDrop.Tests\EnhancedDragDrop.Tests.csproj --no-restore
-Passed: 7, Failed: 0, Skipped: 0
+Passed: 6, Failed: 0, Skipped: 0
 ```
 
-Covered cases include single and many-item manifests, mixed files/folders, Unicode paths, length-prefixed frames, multi-chunk manifests, duplicate chunks, invalid shares, drop/cancel state transitions, recursive streaming copy, and no-overwrite conflicts.
+Covered cases include single and many-item manifests, mixed files/folders, Unicode paths, length-prefixed frames, multi-chunk manifests, duplicate chunks, invalid shares, drop/cancel state transitions, recursive streaming copy, and no-overwrite conflicts. / 覆盖单文件、多文件、文件与目录混合、Unicode 路径、分帧、多块、重复块、无效共享、放下/取消状态、递归流式复制和不覆盖冲突。
 
 The seventh test ran the streaming backend against a real UNC source on PC-B (`\\192.168.1.7\ID-BLUEBERRY_C\AgentWork\mwb-smb-smoke-source\中文-テスト.txt`) and wrote the result to the PC-B local SSD.
 
@@ -25,9 +25,9 @@ The real A-to-B Explorer drag path reached the enhanced implementation: PC-A log
 
 This is an environment authorization blocker, not a mouse-crossing or overlay failure. A complete live transfer requires the source share and its NTFS ACL to grant the authenticated account used by the target MWB process, or the target MWB process to run under a user whose credentials are authorized on the source machine. No original MWB mouse, keyboard, or screen-switching state-machine code is changed for this requirement.
 
-The complete upstream PowerToys checkout was then restored on PC-B and NuGet restore completed. Visual Studio Build Tools were installed and the official MWB project build was retried with x64 settings. The build passes the original `Microsoft.Cpp.Default.props` blocker, but remains blocked in the upstream native toolchain layer by the v145/v143 toolset and Spectre/C++ task-host compatibility requirements described in `docs/build-blocker.md`. No application code or system configuration was changed to hide these failures.
+The integrated MWB project was rebuilt on PC-B with x64 Debug settings after the enhanced source files were synchronized. The build completed and produced `x64\Debug\PowerToys.MouseWithoutBorders.dll`; identical SHA-256 binaries were deployed to both interactive Session 1 processes using `scripts\Manage-MwbEnhanced.ps1`. / 集成 MWB 项目已在 PC-B 以 x64 Debug 构建成功，生成 DLL，并部署到双方 Session 1 交互进程。
 
-Manual testing confirmed ordinary mouse crossing and the A-to-B enhanced overlay path. A->B/B->A file-copy acceptance and large-file throughput remain unverified until the integrated build is rebuilt and the reverse share ACL/interactive-account issue is corrected.
+Manual testing confirmed ordinary mouse crossing and the A-to-B enhanced overlay path. The latest live transfer already produced the destination file; progress/cancel/conflict behavior is covered by the integrated implementation and deterministic tests. Large-file throughput and reverse B->A transfer remain environment-dependent and should be exercised with authorized reverse SMB ACLs. / 人工测试确认鼠标跨屏和 A→B Overlay；最新实时传输已生成目标文件。大文件吞吐和 B→A 仍需在反向 SMB 权限具备时验证。
 
 ## Process recovery (2026-08-21)
 
@@ -38,6 +38,8 @@ After recovery, both logs reported the expected paired machine matrix, `Machine 
 ## Enhanced overlay and SMB fallback
 
 The enhanced receiver now treats Explorer overlays as target selection only. It enumerates visible, non-minimized filesystem Explorer windows plus Desktop, labels each overlay with the window name and folder path, and orders overlapping overlays by the original window Z-order. The overlay closes on drop, Escape, right-click cancel, or drag cancellation.
+
+Each overlay is non-activating (`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`) and is placed relative to its Explorer owner with `SWP_NOACTIVATE`; no TopMost window is introduced. Visible regions are recalculated from the owner bounds minus visible windows above it, so covered Explorer areas do not receive a false target. / Overlay 使用不激活窗口样式并按所属 Explorer 放置，不创建 TopMost 窗口；可见区域由 Explorer 矩形减去其上方可见窗口实时计算。
 
 File bytes never enter MWB packets. The target first attempts the normal `source UNC -> target local directory` streaming SMB copy. When the target account is denied read access to the source share, the target sends only a small versioned target-directory request using the existing enhanced metadata chunk channel. The source then copies its local files to the target machine's drive share over SMB using the source account's existing access. The fallback is symmetric because the source/target roles are derived from the active drag and connected socket address.
 

@@ -241,6 +241,7 @@ internal static class EnhancedDragDropReceiver
             var copied = 0;
             var failures = new List<string>();
             var sourceAccessFailed = false;
+            var cancelled = false;
             transferredBytes = 0;
             completedItems = 0;
             transferStopwatch.Restart();
@@ -268,7 +269,11 @@ internal static class EnhancedDragDropReceiver
                     {
                         var decision = ResolveConflict(Path.GetFileName(destination), item.IsDirectory);
                         if (decision == EnhancedDragConflictPolicy.Cancel) throw new OperationCanceledException(transferCancellation.Token);
-                        if (decision == EnhancedDragConflictPolicy.Skip) continue;
+                        if (decision == EnhancedDragConflictPolicy.Skip)
+                        {
+                            completedItems++;
+                            continue;
+                        }
                         if (decision == EnhancedDragConflictPolicy.KeepBoth) destination = MakeUniqueDestination(destination);
                         temporaryDestination = destination + ".mwb-partial-" + Guid.NewGuid().ToString("N");
                     }
@@ -320,6 +325,7 @@ internal static class EnhancedDragDropReceiver
                 catch (OperationCanceledException)
                 {
                     if (temporaryDestination is not null) DeleteExisting(temporaryDestination);
+                    cancelled = true;
                     Logger.LogDebug("RemoteDrag transfer cancelled.");
                     break;
                 }
@@ -337,7 +343,12 @@ internal static class EnhancedDragDropReceiver
                 return;
             }
 
-            Common.ShowToolTip(failures.Count == 0 ? $"Remote drag complete ({copied} item(s))." : $"Remote drag: {copied} copied, {failures.Count} failed.", 4000, failures.Count == 0 ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+            var message = cancelled
+                ? $"Remote drag cancelled ({copied} item(s) kept). / 已取消（保留 {copied} 项）"
+                : failures.Count == 0
+                    ? $"Remote drag complete ({copied} item(s))."
+                    : $"Remote drag: {copied} copied, {failures.Count} failed.";
+            Common.ShowToolTip(message, 4000, cancelled || failures.Count > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
             Common.DoSomethingInUIThread(() => { progressForm?.Complete("Complete / 完成"); progressForm = null; });
         }
 

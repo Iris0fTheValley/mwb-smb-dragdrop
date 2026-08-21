@@ -164,7 +164,11 @@ internal static class EnhancedDragDropAdapter
             ReportProgress(totalBytes, transferred, copied, manifest.Items.Count, stopwatch, "");
             Common.ShowToolTip($"Remote drag sent ({copied} item(s)) / 已发送 {copied} 个文件。", 3000, System.Windows.Forms.ToolTipIcon.Info, true);
         }
-        catch (OperationCanceledException) { Logger.LogDebug("RemoteDrag push cancelled."); }
+        catch (OperationCanceledException)
+        {
+            Logger.LogDebug("RemoteDrag push cancelled.");
+            Common.ShowToolTip("Remote drag cancelled. / 已取消文件传输。", 3000, System.Windows.Forms.ToolTipIcon.Warning, true);
+        }
         catch (Exception ex)
         {
             Logger.Log("RemoteDrag push failed: " + ex.Message);
