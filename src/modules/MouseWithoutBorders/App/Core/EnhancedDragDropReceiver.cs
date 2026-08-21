@@ -178,11 +178,6 @@ internal static class EnhancedDragDropReceiver
         private readonly List<OverlayForm> forms = new();
         private readonly CancellationTokenSource transferCancellation = new();
         private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 250 };
-        private readonly Stopwatch transferStopwatch = new();
-        private EnhancedDragProgressForm progressForm;
-        private EnhancedDragConflictPolicy conflictPolicy = EnhancedDragConflictPolicy.Ask;
-        private long transferredBytes;
-        private int completedItems;
         private bool completed;
 
         internal OverlaySession(ID sourceId, RemoteDragManifest manifest)
@@ -208,21 +203,7 @@ internal static class EnhancedDragDropReceiver
             completed = true;
             refreshTimer.Stop();
             CloseForms();
-            Common.DoSomethingInUIThread(() =>
-            {
-                progressForm?.Complete("Starting / 正在开始");
-                progressForm = new EnhancedDragProgressForm(OnTransferCancel);
-                progressForm.Show();
-            });
             _ = Task.Run(() => TransferAsync(target.FolderPath));
-        }
-
-        private void OnTransferCancel()
-        {
-            if (transferCancellation.IsCancellationRequested) return;
-            transferCancellation.Cancel();
-            Common.SendPackage(sourceId, PackageType.EnhancedDragCancel);
-            Logger.LogDebug("RemoteDrag transfer cancellation requested.");
         }
 
         private void OnCancel()
@@ -242,13 +223,9 @@ internal static class EnhancedDragDropReceiver
             var failures = new List<string>();
             var sourceAccessFailed = false;
             var cancelled = false;
-            transferredBytes = 0;
-            completedItems = 0;
-            transferStopwatch.Restart();
             foreach (var item in manifest.Items)
             {
                 var sourceProbeCompleted = false;
-                string temporaryDestination = null;
                 try
                 {
                     var source = ResolveSourcePath(manifest.SourceMachine, item.LocalPath);
@@ -259,50 +236,10 @@ internal static class EnhancedDragDropReceiver
                     // SMB authentication/share failures as IOException rather than
                     // UnauthorizedAccessException (for example, ERROR_LOGON_FAILURE).
                     // Those failures must use the source-side push fallback.
-                    if ((attributes & FileAttributes.Directory) == 0)
-                    {
-                        await using var probe = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
-                    }
                     sourceProbeCompleted = true;
-                    var destination = Path.Combine(targetDirectory, Path.GetFileName(Path.TrimEndingDirectorySeparator(source)));
-                    if (File.Exists(destination) || Directory.Exists(destination))
-                    {
-                        var decision = ResolveConflict(Path.GetFileName(destination), item.IsDirectory);
-                        if (decision == EnhancedDragConflictPolicy.Cancel) throw new OperationCanceledException(transferCancellation.Token);
-                        if (decision == EnhancedDragConflictPolicy.Skip)
-                        {
-                            completedItems++;
-                            continue;
-                        }
-                        if (decision == EnhancedDragConflictPolicy.KeepBoth) destination = MakeUniqueDestination(destination);
-                        temporaryDestination = destination + ".mwb-partial-" + Guid.NewGuid().ToString("N");
-                    }
-                    else
-                    {
-                        temporaryDestination = destination + ".mwb-partial-" + Guid.NewGuid().ToString("N");
-                    }
-                    if ((attributes & FileAttributes.Directory) == 0)
-                    {
-                        await CopyFileAsync(source, temporaryDestination, value => ReportProgress(item, value), transferCancellation.Token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await CopyDirectoryAsync(source, temporaryDestination, value => ReportProgress(item, value), transferCancellation.Token).ConfigureAwait(false);
-                    }
-                    if (File.Exists(destination) || Directory.Exists(destination)) DeleteExisting(destination);
-                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                    if (item.IsDirectory)
-                    {
-                        Directory.Move(temporaryDestination, destination);
-                    }
-                    else
-                    {
-                        File.Move(temporaryDestination, destination);
-                    }
-                    temporaryDestination = null;
+                    await ShellFileOperation.CopyAsync(new[] { source }, targetDirectory, Common.MainForm?.Handle ?? 0, transferCancellation.Token).ConfigureAwait(false);
                     copied++;
-                    completedItems++;
-                    Logger.LogDebug("Transfer completed: " + source + " -> " + destination);
+                    Logger.LogDebug("Transfer completed: " + source + " -> " + targetDirectory);
                 }
                 catch (UnauthorizedAccessException ex) when (!sourceProbeCompleted)
                 {
@@ -324,22 +261,19 @@ internal static class EnhancedDragDropReceiver
                 }
                 catch (OperationCanceledException)
                 {
-                    if (temporaryDestination is not null) DeleteExisting(temporaryDestination);
                     cancelled = true;
                     Logger.LogDebug("RemoteDrag transfer cancelled.");
                     break;
                 }
                 catch (Exception ex)
                 {
-                    if (temporaryDestination is not null) DeleteExisting(temporaryDestination);
                     failures.Add(ex.Message);
                     Logger.Log("Transfer failed: " + ex.Message);
                 }
             }
             if (copied == 0 && sourceAccessFailed)
             {
-                RequestSourcePush(targetDirectory, conflictPolicy);
-                Common.DoSomethingInUIThread(() => { progressForm?.Complete("Source push / 源端传输"); progressForm = null; });
+                RequestSourcePush(targetDirectory);
                 return;
             }
 
@@ -349,23 +283,6 @@ internal static class EnhancedDragDropReceiver
                     ? $"Remote drag complete ({copied} item(s))."
                     : $"Remote drag: {copied} copied, {failures.Count} failed.";
             Common.ShowToolTip(message, 4000, cancelled || failures.Count > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
-            Common.DoSomethingInUIThread(() => { progressForm?.Complete("Complete / 完成"); progressForm = null; });
-        }
-
-        private EnhancedDragConflictPolicy ResolveConflict(string name, bool isDirectory)
-        {
-            if (conflictPolicy != EnhancedDragConflictPolicy.Ask) return conflictPolicy;
-            var decision = (Policy: EnhancedDragConflictPolicy.Cancel, ApplyToAll: false);
-            Common.DoSomethingInUIThread(() => decision = EnhancedDragConflictDialog.Show(name, isDirectory), true);
-            if (decision.ApplyToAll) conflictPolicy = decision.Policy;
-            return decision.Policy;
-        }
-
-        private void ReportProgress(RemoteDragItem item, long bytes)
-        {
-            transferredBytes += bytes;
-            var total = manifest.Items.Sum(value => value.SizeBytes);
-            progressForm?.Report(new EnhancedDragProgress(total, transferredBytes, manifest.Items.Count, completedItems, transferredBytes / Math.Max(0.001, transferStopwatch.Elapsed.TotalSeconds)), item.LocalPath);
         }
 
         private static bool IsLikelySourceAccessFailure(IOException exception)
@@ -376,9 +293,9 @@ internal static class EnhancedDragDropReceiver
             return exception is not DirectoryNotFoundException;
         }
 
-        private void RequestSourcePush(string targetDirectory, EnhancedDragConflictPolicy policy)
+        private void RequestSourcePush(string targetDirectory)
         {
-            var request = new RemoteDragPushRequest { Version = 2, DragId = manifest.DragId, TargetDirectory = Path.GetFullPath(targetDirectory), ConflictPolicy = policy };
+            var request = new RemoteDragPushRequest { Version = 2, DragId = manifest.DragId, TargetDirectory = Path.GetFullPath(targetDirectory) };
             var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request, JsonOptions));
             var total = Math.Max(1, (payload.Length + 19) / 20);
             for (var index = 0; index < total; index++)
@@ -389,51 +306,6 @@ internal static class EnhancedDragDropReceiver
             }
             Logger.LogDebug($"RemoteDrag source SMB read denied; requested source push to {targetDirectory}.");
             Common.ShowToolTip("Remote drag: source is transferring via SMB.", 4000, ToolTipIcon.Info, true);
-        }
-
-        private static async Task CopyDirectoryAsync(string source, string destination, Action<long> onBytes, CancellationToken cancellationToken)
-        {
-            Directory.CreateDirectory(destination);
-            foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
-            }
-            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await CopyFileAsync(file, Path.Combine(destination, Path.GetRelativePath(source, file)), onBytes, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        private static async Task CopyFileAsync(string source, string destination, Action<long> onBytes, CancellationToken cancellationToken)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var buffer = new byte[1024 * 1024];
-            int read;
-            while ((read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false)) > 0)
-            {
-                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                onBytes(read);
-            }
-        }
-
-        private static string MakeUniqueDestination(string destination)
-        {
-            var directory = Path.GetDirectoryName(destination)!;
-            var name = Path.GetFileName(destination);
-            for (var index = 2; ; index++)
-            {
-                var candidate = Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(name)} ({index}){Path.GetExtension(name)}");
-                if (!File.Exists(candidate) && !Directory.Exists(candidate)) return candidate;
-            }
-        }
-
-        private static void DeleteExisting(string path)
-        {
-            if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path);
         }
 
         private static string ResolveSourcePath(string machine, string localPath)
@@ -457,8 +329,7 @@ internal static class EnhancedDragDropReceiver
         {
             if (completed) return;
             var targets = DiscoverTargets();
-            var ignoredOverlays = forms.Where(form => form.IsHandleCreated).Select(form => form.Handle).ToHashSet();
-            var desired = targets.SelectMany(target => GetVisibleRegions(target, ignoredOverlays).Select(bounds => (target, bounds))).ToArray();
+            var desired = targets.Select(target => (target, bounds: target.Bounds)).ToArray();
             for (var index = forms.Count - 1; index >= 0; index--)
             {
                 if (!desired.Any(value => value.target.Hwnd == forms[index].TargetHwnd && value.bounds == forms[index].TargetBounds))
@@ -483,33 +354,6 @@ internal static class EnhancedDragDropReceiver
             }
         }
 
-        private static IReadOnlyList<Rectangle> GetVisibleRegions(ExplorerTarget target, IReadOnlySet<nint> ignoredWindows)
-        {
-            var regions = new List<Rectangle> { target.Bounds };
-            const uint GW_HWNDPREV = 3;
-            for (var current = GetWindow(target.Hwnd, GW_HWNDPREV); current != 0; current = GetWindow(current, GW_HWNDPREV))
-            {
-                if (ignoredWindows.Contains(current)) continue;
-                if (!IsWindowVisible(current) || IsIconic(current) || !GetWindowRect(current, out var rect)) continue;
-                var occluder = rect.ToRectangle();
-                var next = new List<Rectangle>();
-                foreach (var region in regions) Subtract(region, occluder, next);
-                regions = next;
-                if (regions.Count == 0) break;
-            }
-            return regions.Where(region => region.Width > 8 && region.Height > 8).ToArray();
-        }
-
-        private static void Subtract(Rectangle source, Rectangle occluder, List<Rectangle> output)
-        {
-            var intersection = Rectangle.Intersect(source, occluder);
-            if (intersection.IsEmpty) { output.Add(source); return; }
-            if (intersection.Top > source.Top) output.Add(Rectangle.FromLTRB(source.Left, source.Top, source.Right, intersection.Top));
-            if (intersection.Bottom < source.Bottom) output.Add(Rectangle.FromLTRB(source.Left, intersection.Bottom, source.Right, source.Bottom));
-            if (intersection.Left > source.Left) output.Add(Rectangle.FromLTRB(source.Left, intersection.Top, intersection.Left, intersection.Bottom));
-            if (intersection.Right < source.Right) output.Add(Rectangle.FromLTRB(intersection.Right, intersection.Top, source.Right, intersection.Bottom));
-        }
-
         public void Dispose()
         {
             refreshTimer.Stop();
@@ -532,7 +376,7 @@ internal static class EnhancedDragDropReceiver
                     var url = (string)window.LocationURL;
                     if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile || !Directory.Exists(uri.LocalPath)) continue;
                     var title = (string)window.LocationName;
-                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), uri.LocalPath, string.IsNullOrWhiteSpace(title) ? Path.GetFileName(uri.LocalPath) : title, GetZOrder(hwnd)));
+                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), uri.LocalPath, string.IsNullOrWhiteSpace(title) ? Path.GetFileName(uri.LocalPath) : title, GetDpiForWindow(hwnd)));
                 }
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
@@ -540,13 +384,13 @@ internal static class EnhancedDragDropReceiver
             if (desktop != 0 && GetWindowRect(desktop, out var desktopRect))
             {
                 var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), desktopPath, "Desktop", int.MaxValue));
+                targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), desktopPath, "Desktop", GetDpiForWindow(desktop)));
             }
             Logger.LogDebug("ExplorerTargets discovered: " + string.Join("; ", targets.Select(target => $"{target.Hwnd}:{target.DisplayName}:{target.FolderPath}:{target.Bounds}")));
             return targets;
         }
 
-        private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath, string DisplayName, int ZOrder);
+        private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath, string DisplayName, uint Dpi);
 
         private sealed class OverlayForm : System.Windows.Forms.Form
         {
@@ -573,7 +417,7 @@ internal static class EnhancedDragDropReceiver
                 MouseLeave += (_, _) => { BackColor = Color.DeepSkyBlue; Opacity = 0.18; };
                 MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) onDrop(target); else if (e.Button == MouseButtons.Right) onCancel(); };
                 KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) onCancel(); };
-                Paint += (_, e) => { using var pen = new Pen(Color.White, 3); e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3); TextRenderer.DrawText(e.Graphics, $"{target.DisplayName} / 目录\r\n{target.FolderPath}", Font, new Rectangle(12, 12, Math.Max(20, Width - 24), Math.Max(20, Height - 24)), Color.White, Color.FromArgb(160, 20, 20, 20)); };
+                Paint += (_, e) => { using var pen = new Pen(Color.White, 3); e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3); TextRenderer.DrawText(e.Graphics, $"{target.DisplayName} / 目录\r\n{target.FolderPath}\r\nDPI {target.Dpi}", Font, new Rectangle(12, 12, Math.Max(20, Width - 24), Math.Max(20, Height - 24)), Color.White, Color.FromArgb(160, 20, 20, 20)); };
                 Shown += (_, _) => PlaceAboveExplorer();
             }
 
@@ -601,7 +445,10 @@ internal static class EnhancedDragDropReceiver
 
             private void PlaceAboveExplorer()
             {
-                if (IsHandleCreated) _ = SetWindowPos(Handle, target.Hwnd, Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                if (IsHandleCreated)
+                {
+                    _ = SetWindowPos(Handle, target.Hwnd, Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                }
             }
         }
 
@@ -610,21 +457,10 @@ internal static class EnhancedDragDropReceiver
         [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
         [DllImport("user32.dll")] private static extern nint GetDesktopWindow();
-        [DllImport("user32.dll")] private static extern nint GetWindow(nint hWnd, uint uCmd);
+        [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hWnd);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
         private const uint SWP_NOACTIVATE = 0x0010;
         private const uint SWP_SHOWWINDOW = 0x0040;
-
-        private static int GetZOrder(nint hwnd)
-        {
-            const uint GW_HWNDPREV = 3;
-            var rank = 0;
-            for (var current = GetWindow(hwnd, GW_HWNDPREV); current != 0 && rank < 10000; current = GetWindow(current, GW_HWNDPREV))
-            {
-                rank++;
-            }
-            return rank;
-        }
     }
 
     private sealed record RemoteDragManifest
@@ -648,7 +484,6 @@ internal static class EnhancedDragDropReceiver
         public int Version { get; init; }
         public Guid DragId { get; init; }
         public string TargetDirectory { get; init; } = string.Empty;
-        public EnhancedDragConflictPolicy ConflictPolicy { get; init; }
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };

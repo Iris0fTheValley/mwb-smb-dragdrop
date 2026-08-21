@@ -14,13 +14,13 @@ This public repository contains an enhanced Explorer-to-Explorer file drag flow 
 4. MouseUp selects one target directory. The target resolves the source drive to the established `<machine>_<drive>` share and streams files/folders over UNC/SMB without reading the whole file into memory.
 5. Esc, right-click, return-to-source, duplicate IDs, malformed manifests, unavailable shares, conflicts, cancellation, and partial failures are reported and logged.
 
-目标端会为每个可用 Explorer 窗口创建独立的半透明 Overlay。Overlay 按 Explorer 实际可见区域裁剪，遵循窗口 Z-order，窗口移动、缩放、遮挡、最小化或关闭时每 250 ms 同步。Overlay 不抢焦点，MouseUp 只用于选择目录。
+目标端会为每个可用 Explorer 窗口创建独立的半透明 Overlay。Overlay 使用 Windows 返回的 Bounds 和 DPI，一对一覆盖 Explorer；它紧贴 Explorer 正上方但低于原本位于 Explorer 上方的窗口，因此重叠和遮挡由 Windows 自己处理。窗口移动、缩放、最小化或关闭时每 250 ms 同步。Overlay 不抢焦点，MouseUp 只用于选择目录。
 
-The target shows one non-activating translucent overlay per usable Explorer window. Each overlay is clipped to the window's visible Z-order region and refreshed every 250 ms as windows move, resize, become covered, minimized, or close. MouseUp selects the directory; it does not replace MWB input handling.
+The target shows one non-activating translucent overlay per usable Explorer window. Each overlay uses the native Explorer bounds/DPI and is placed immediately above its Explorer owner while remaining below windows that were already above it, so Windows handles overlap, occlusion, and hit-testing. It refreshes every 250 ms as windows move, resize, minimize, or close. MouseUp selects the directory; it does not replace MWB input handling.
 
-传输窗口显示总大小、已传输、百分比、速度和文件数量。取消时通过现有增强控制包通知对端，并删除 `.mwb-partial-*` 临时文件；同名文件或目录支持替换、跳过、保留两者、取消及“应用到全部”。
+文件落盘优先调用 Windows Shell `IFileOperation`，源 SMB/UNC 路径和目标目录都作为 Shell item 交给系统。Windows 负责递归目录、原生进度、冲突、错误和取消交互；MWB 只负责 manifest、SMB 路径解析和把目标目录传回源端。
 
-The bilingual progress window reports total bytes, transferred bytes, percentage, speed, and item count. Cancel sends the existing enhanced control message and removes `.mwb-partial-*` temporary files. Conflicts support Replace, Skip, Keep both, Cancel, and Apply to all.
+File materialization now prefers Windows Shell `IFileOperation`: SMB/UNC sources and the target directory are passed as Shell items. Windows owns recursive directory handling, native progress, conflicts, errors, and cancellation; MWB only coordinates the manifest, SMB path mapping, and target-directory request.
 
 MWB never carries file contents for enhanced drags.
 

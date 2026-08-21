@@ -28,7 +28,6 @@ internal static class EnhancedDragDropAdapter
     private const int ChunkBytes = 20;
     private static EnhancedDragManifest lastManifest;
     private static CancellationTokenSource activeTransferCancellation;
-    private static EnhancedDragProgressForm activeProgressForm;
 
     internal static Guid ActiveDragId { get; private set; }
     internal static bool IsActive => ActiveDragId != Guid.Empty;
@@ -71,11 +70,6 @@ internal static class EnhancedDragDropAdapter
         ActiveDragId = Guid.Empty;
         activeTransferCancellation?.Cancel();
         activeTransferCancellation = null;
-        Common.DoSomethingInUIThread(() =>
-        {
-            activeProgressForm?.Complete("Cancelled / 已取消");
-            activeProgressForm = null;
-        });
     }
 
     internal static void ReceivePushRequest(ID sourceId, string targetMachine, string requestJson)
@@ -91,13 +85,7 @@ internal static class EnhancedDragDropAdapter
             activeTransferCancellation?.Cancel();
             activeTransferCancellation = new CancellationTokenSource();
             var cancellation = activeTransferCancellation;
-            Common.DoSomethingInUIThread(() =>
-            {
-                activeProgressForm?.Complete("Cancelled / 已取消");
-                activeProgressForm = new EnhancedDragProgressForm(cancellation.Cancel);
-                activeProgressForm.Show();
-            });
-            _ = Task.Run(() => PushToTargetAsync(targetMachine, request.TargetDirectory, lastManifest, request.ConflictPolicy, cancellation.Token));
+            _ = Task.Run(() => PushToTargetAsync(targetMachine, request.TargetDirectory, lastManifest, cancellation.Token));
             Logger.LogDebug($"RemoteDrag push requested: DragId={request.DragId}, TargetMachine={targetMachine}, TargetDirectory={request.TargetDirectory}");
         }
         catch (Exception ex)
@@ -106,63 +94,13 @@ internal static class EnhancedDragDropAdapter
         }
     }
 
-    private static async Task PushToTargetAsync(string targetMachine, string targetDirectory, EnhancedDragManifest manifest, EnhancedDragConflictPolicy requestPolicy, CancellationToken cancellationToken)
+    private static async Task PushToTargetAsync(string targetMachine, string targetDirectory, EnhancedDragManifest manifest, CancellationToken cancellationToken)
     {
-        var copied = 0;
-        long transferred = 0;
-        var totalBytes = manifest.Items.Sum(item => item.SizeBytes);
-        var stopwatch = Stopwatch.StartNew();
         try
         {
-            var effectivePolicy = requestPolicy;
-            foreach (var item in manifest.Items)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var destination = ResolveTargetPath(targetMachine, targetDirectory, Path.GetFileName(Path.TrimEndingDirectorySeparator(item.LocalPath)));
-                string temporaryDestination = null;
-                if (File.Exists(destination) || Directory.Exists(destination))
-                {
-                    var policy = effectivePolicy;
-                    if (policy == EnhancedDragConflictPolicy.Ask)
-                    {
-                        var decision = (Policy: EnhancedDragConflictPolicy.Ask, ApplyToAll: false);
-                        Common.DoSomethingInUIThread(() => decision = EnhancedDragConflictDialog.Show(Path.GetFileName(item.LocalPath), item.IsDirectory), true);
-                        policy = decision.Policy;
-                        if (decision.ApplyToAll) effectivePolicy = policy;
-                    }
-                    if (policy == EnhancedDragConflictPolicy.Cancel) throw new OperationCanceledException(cancellationToken);
-                    if (policy == EnhancedDragConflictPolicy.Skip) { copied++; continue; }
-                    if (policy == EnhancedDragConflictPolicy.KeepBoth) destination = MakeUniqueDestination(destination);
-                    if (policy == EnhancedDragConflictPolicy.Replace) DeleteExisting(destination);
-                }
-
-                temporaryDestination = destination + ".mwb-partial-" + Guid.NewGuid().ToString("N");
-                try
-                {
-                    if (item.IsDirectory)
-                    {
-                        await CopyDirectoryAsync(item.LocalPath, temporaryDestination, value => ReportProgress(totalBytes, transferred += value, copied, manifest.Items.Count, stopwatch, item.LocalPath), cancellationToken).ConfigureAwait(false);
-                        Directory.Move(temporaryDestination, destination);
-                    }
-                    else
-                    {
-                        await CopyFileAsync(item.LocalPath, temporaryDestination, value => ReportProgress(totalBytes, transferred += value, copied, manifest.Items.Count, stopwatch, item.LocalPath), cancellationToken).ConfigureAwait(false);
-                        File.Move(temporaryDestination, destination);
-                    }
-                    temporaryDestination = null;
-                }
-                catch
-                {
-                    if (temporaryDestination is not null) DeleteExisting(temporaryDestination);
-                    throw;
-                }
-
-                copied++;
-                Logger.LogDebug("RemoteDrag push completed: " + item.LocalPath + " -> " + destination);
-            }
-
-            ReportProgress(totalBytes, transferred, copied, manifest.Items.Count, stopwatch, "");
-            Common.ShowToolTip($"Remote drag sent ({copied} item(s)) / 已发送 {copied} 个文件。", 3000, System.Windows.Forms.ToolTipIcon.Info, true);
+            var destinationDirectory = ResolveTargetDirectory(targetMachine, targetDirectory);
+            await ShellFileOperation.CopyAsync(manifest.Items.Select(item => item.LocalPath).ToArray(), destinationDirectory, Common.MainForm?.Handle ?? 0, cancellationToken).ConfigureAwait(false);
+            Common.ShowToolTip($"Remote drag sent ({manifest.Items.Count} item(s)) / 已发送 {manifest.Items.Count} 个文件。", 3000, System.Windows.Forms.ToolTipIcon.Info, true);
         }
         catch (OperationCanceledException)
         {
@@ -176,46 +114,11 @@ internal static class EnhancedDragDropAdapter
         }
         finally
         {
-            Common.DoSomethingInUIThread(() => { activeProgressForm?.Complete("Complete / 完成"); activeProgressForm = null; });
             if (activeTransferCancellation is not null && activeTransferCancellation.Token == cancellationToken)
             {
                 activeTransferCancellation = null;
             }
         }
-    }
-
-    private static async Task CopyDirectoryAsync(string source, string destination, Action<long> onBytes, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(destination);
-        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
-        }
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await CopyFileAsync(file, Path.Combine(destination, Path.GetRelativePath(source, file)), onBytes, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task CopyFileAsync(string source, string destination, Action<long> onBytes, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var buffer = new byte[1024 * 1024];
-        int read;
-        while ((read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false)) > 0)
-        {
-            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            onBytes(read);
-        }
-    }
-
-    private static void ReportProgress(long totalBytes, long transferred, int completed, int totalItems, Stopwatch stopwatch, string item)
-    {
-        activeProgressForm?.Report(new EnhancedDragProgress(totalBytes, transferred, totalItems, completed, transferred / Math.Max(0.001, stopwatch.Elapsed.TotalSeconds)), item);
     }
 
     private static long GetSizeBytes(string path)
@@ -230,23 +133,7 @@ internal static class EnhancedDragDropAdapter
         catch { return 1; }
     }
 
-    private static string MakeUniqueDestination(string destination)
-    {
-        var directory = Path.GetDirectoryName(destination)!;
-        var name = Path.GetFileName(destination);
-        for (var index = 2; ; index++)
-        {
-            var candidate = Path.Combine(directory, $"{Path.GetFileNameWithoutExtension(name)} ({index}){Path.GetExtension(name)}");
-            if (!File.Exists(candidate) && !Directory.Exists(candidate)) return candidate;
-        }
-    }
-
-    private static void DeleteExisting(string path)
-    {
-        if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path);
-    }
-
-    private static string ResolveTargetPath(string machine, string targetDirectory, string name)
+    private static string ResolveTargetDirectory(string machine, string targetDirectory)
     {
         var fullPath = Path.GetFullPath(targetDirectory);
         var root = Path.GetPathRoot(fullPath)?.TrimEnd('\\') ?? throw new IOException("Target path has no drive root.");
@@ -256,8 +143,7 @@ internal static class EnhancedDragDropAdapter
         var host = address?.ToString() ?? machine;
         var share = machine + "_" + root[0];
         var relative = fullPath[Path.GetPathRoot(fullPath)!.Length..].TrimStart('\\');
-        var basePath = string.IsNullOrEmpty(relative) ? $"\\\\{host}\\{share}" : $"\\\\{host}\\{share}\\{relative}";
-        return Path.Combine(basePath, name);
+        return string.IsNullOrEmpty(relative) ? $"\\\\{host}\\{share}" : $"\\\\{host}\\{share}\\{relative}";
     }
 
     private sealed record EnhancedDragManifest
@@ -281,7 +167,6 @@ internal static class EnhancedDragDropAdapter
         public int Version { get; init; }
         public Guid DragId { get; init; }
         public string TargetDirectory { get; init; } = string.Empty;
-        public EnhancedDragConflictPolicy ConflictPolicy { get; init; }
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
