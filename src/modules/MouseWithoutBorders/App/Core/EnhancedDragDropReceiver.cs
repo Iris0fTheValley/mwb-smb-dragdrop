@@ -92,7 +92,16 @@ internal static class EnhancedDragDropReceiver
                 throw new FormatException("RemoteDrag payload validation failed.");
             }
 
-            EnhancedDragDropAdapter.ReceivePushRequest(package.Src, package.MachineName, json);
+            // Enhanced chunk payloads occupy the extended DATA tail, which is also
+            // where the legacy fixed-width MachineName lives. Resolve the sender
+            // from its trusted MWB ID instead of reading the overlapping field.
+            var sourceMachine = MachineStuff.NameFromID(package.Src);
+            if (string.IsNullOrWhiteSpace(sourceMachine))
+            {
+                throw new InvalidOperationException("Remote drag sender is not in the machine matrix.");
+            }
+
+            EnhancedDragDropAdapter.ReceivePushRequest(package.Src, sourceMachine, json);
         }
         catch (Exception ex)
         {
