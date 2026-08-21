@@ -177,7 +177,10 @@ internal static class EnhancedDragDropAdapter
         finally
         {
             Common.DoSomethingInUIThread(() => { activeProgressForm?.Complete("Complete / 完成"); activeProgressForm = null; });
-            activeTransferCancellation = null;
+            if (activeTransferCancellation is not null && activeTransferCancellation.Token == cancellationToken)
+            {
+                activeTransferCancellation = null;
+            }
         }
     }
 
