@@ -44,13 +44,7 @@ internal static class EnhancedDragDropAdapter
             Version = 1,
             DragId = Guid.NewGuid(),
             SourceMachine = sourceMachine,
-            Items = paths.Select(path => new EnhancedDragItem
-            {
-                LocalPath = Path.GetFullPath(path),
-                IsDirectory = Directory.Exists(path),
-                SizeBytes = GetSizeBytes(path),
-                FileCount = GetFileCount(path),
-            }).ToArray(),
+            Items = paths.Select(CreateManifestItem).ToArray(),
         };
         lastManifest = manifest;
         ActiveDragId = manifest.DragId;
@@ -70,6 +64,38 @@ internal static class EnhancedDragDropAdapter
         ActiveDragId = Guid.Empty;
         activeTransferCancellation?.Cancel();
         activeTransferCancellation = null;
+    }
+
+    private static EnhancedDragItem CreateManifestItem(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var isDirectory = Directory.Exists(fullPath);
+        if (!isDirectory)
+        {
+            try
+            {
+                var info = new FileInfo(fullPath);
+                return new EnhancedDragItem
+                {
+                    LocalPath = fullPath,
+                    IsDirectory = false,
+                    SizeBytes = info.Length,
+                    FileCount = 1,
+                };
+            }
+            catch
+            {
+                return new EnhancedDragItem { LocalPath = fullPath, IsDirectory = false, SizeBytes = 0, FileCount = 1 };
+            }
+        }
+
+        return new EnhancedDragItem
+        {
+            LocalPath = fullPath,
+            IsDirectory = true,
+            SizeBytes = GetSizeBytes(fullPath),
+            FileCount = GetFileCount(fullPath),
+        };
     }
 
     internal static void ReceivePushRequest(ID sourceId, string targetMachine, string requestJson)

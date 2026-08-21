@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -22,36 +23,65 @@ internal static class ShellFileOperation
 {
     private const uint FOFX_SHOWELEVATIONPROMPT = 0x00010000;
     private const uint FOFX_NOCOPYSECURITYATTRIBS = 0x08000000;
+    private static readonly BlockingCollection<OperationWork> StaQueue = new();
+    private static readonly System.Threading.Thread StaThread = StartStaThread();
 
     internal static Task CopyAsync(IReadOnlyList<string> sources, string destinationDirectory, nint ownerWindow, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sources);
         if (sources.Count == 0) return Task.CompletedTask;
         var completion = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled(cancellationToken);
+        }
+
+        StaQueue.Add(new OperationWork(sources, destinationDirectory, ownerWindow, completion, cancellationToken), cancellationToken);
+        return completion.Task;
+    }
+
+    private static System.Threading.Thread StartStaThread()
+    {
         var thread = new System.Threading.Thread(() =>
         {
-            try
+            foreach (var work in StaQueue.GetConsumingEnumerable())
             {
-                Copy(sources, destinationDirectory, ownerWindow, cancellationToken);
-                completion.TrySetResult(new object());
-            }
-            catch (OperationCanceledException ex)
-            {
-                completion.TrySetCanceled(ex.CancellationToken);
-            }
-            catch (Exception ex)
-            {
-                completion.TrySetException(ex);
+                if (work.CancellationToken.IsCancellationRequested)
+                {
+                    work.Completion.TrySetCanceled(work.CancellationToken);
+                    continue;
+                }
+
+                try
+                {
+                    Copy(work.Sources, work.DestinationDirectory, work.OwnerWindow, work.CancellationToken);
+                    work.Completion.TrySetResult(new object());
+                }
+                catch (OperationCanceledException ex)
+                {
+                    work.Completion.TrySetCanceled(ex.CancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    work.Completion.TrySetException(ex);
+                }
             }
         })
         {
             IsBackground = true,
-            Name = "MWB Shell File Operation",
+            Name = "MWB Shell File Operation STA",
         };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        return completion.Task;
+        return thread;
     }
+
+    private sealed record OperationWork(
+        IReadOnlyList<string> Sources,
+        string DestinationDirectory,
+        nint OwnerWindow,
+        TaskCompletionSource<object> Completion,
+        CancellationToken CancellationToken);
 
     private static void Copy(IReadOnlyList<string> sources, string destinationDirectory, nint ownerWindow, CancellationToken cancellationToken)
     {

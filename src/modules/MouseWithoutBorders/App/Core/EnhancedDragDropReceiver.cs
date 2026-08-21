@@ -260,70 +260,57 @@ internal static class EnhancedDragDropReceiver
 
         private async Task TransferCoreAsync(string targetDirectory)
         {
-            var copied = 0;
-            var failures = new List<string>();
-            var sourceAccessFailed = false;
-            var cancelled = false;
-            foreach (var item in manifest.Items)
+            var sources = new List<string>(manifest.Items.Count);
+            try
             {
-                var sourceProbeCompleted = false;
-                try
+                foreach (var item in manifest.Items)
                 {
                     var source = ResolveSourcePath(manifest.SourceMachine, item.LocalPath);
                     Logger.LogDebug("RemoteDrag source resolved: " + source);
-                    var attributes = File.GetAttributes(source);
+                    _ = File.GetAttributes(source);
 
                     // Probe the source before creating the destination. Windows can report
                     // SMB authentication/share failures as IOException rather than
                     // UnauthorizedAccessException (for example, ERROR_LOGON_FAILURE).
                     // Those failures must use the source-side push fallback.
-                    sourceProbeCompleted = true;
-                    await ShellFileOperation.CopyAsync(new[] { source }, targetDirectory, Common.MainForm?.Handle ?? 0, transferCancellation.Token).ConfigureAwait(false);
-                    copied++;
-                    Logger.LogDebug("Transfer completed: " + source + " -> " + targetDirectory);
-                }
-                catch (UnauthorizedAccessException ex) when (!sourceProbeCompleted)
-                {
-                    sourceAccessFailed = true;
-                    failures.Add("SMB access denied: " + ex.Message);
-                    Logger.Log("Transfer failed: SMB access denied. " + ex.Message);
-                }
-                catch (FileNotFoundException ex) when (!sourceProbeCompleted)
-                {
-                    sourceAccessFailed = true;
-                    failures.Add("Source item is unavailable over SMB: " + ex.FileName);
-                    Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.FileName);
-                }
-                catch (IOException ex) when (!sourceProbeCompleted && IsLikelySourceAccessFailure(ex))
-                {
-                    sourceAccessFailed = true;
-                    failures.Add("Source item is unavailable over SMB: " + ex.Message);
-                    Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.Message);
-                }
-                catch (OperationCanceledException)
-                {
-                    cancelled = true;
-                    Logger.LogDebug("RemoteDrag transfer cancelled.");
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    failures.Add(ex.Message);
-                    Logger.Log("Transfer failed: " + ex.Message);
+                    sources.Add(source);
                 }
             }
-            if (copied == 0 && sourceAccessFailed)
+            catch (UnauthorizedAccessException ex)
             {
+                Logger.Log("Transfer failed: SMB access denied. " + ex.Message);
+                RequestSourcePush(targetDirectory);
+                return;
+            }
+            catch (FileNotFoundException ex)
+            {
+                Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.FileName);
+                RequestSourcePush(targetDirectory);
+                return;
+            }
+            catch (IOException ex) when (IsLikelySourceAccessFailure(ex))
+            {
+                Logger.Log("Transfer failed: source item is unavailable over SMB. " + ex.Message);
                 RequestSourcePush(targetDirectory);
                 return;
             }
 
-            var message = cancelled
-                ? $"Remote drag cancelled ({copied} item(s) kept). / 已取消（保留 {copied} 项）"
-                : failures.Count == 0
-                    ? $"Remote drag complete ({copied} item(s))."
-                    : $"Remote drag: {copied} copied, {failures.Count} failed.";
-            Common.ShowToolTip(message, 4000, cancelled || failures.Count > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info, true);
+            try
+            {
+                await ShellFileOperation.CopyAsync(sources, targetDirectory, Common.MainForm?.Handle ?? 0, transferCancellation.Token).ConfigureAwait(false);
+                Logger.LogDebug($"Transfer completed: {sources.Count} item(s) -> {targetDirectory}");
+                Common.ShowToolTip($"Remote drag complete ({sources.Count} item(s)).", 4000, ToolTipIcon.Info, true);
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.LogDebug("RemoteDrag transfer cancelled.");
+                Common.ShowToolTip("Remote drag cancelled. / 已取消文件传输。", 4000, ToolTipIcon.Warning, true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Transfer failed: " + ex.Message);
+                Common.ShowToolTip("Remote drag failed: " + ex.Message, 4000, ToolTipIcon.Warning, true);
+            }
         }
 
         private static bool IsLikelySourceAccessFailure(IOException exception)
