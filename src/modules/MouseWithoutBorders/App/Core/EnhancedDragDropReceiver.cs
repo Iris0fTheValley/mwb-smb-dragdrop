@@ -33,7 +33,7 @@ internal static class EnhancedDragDropReceiver
     private static readonly ConcurrentDictionary<Guid, ChunkAssembly> Assemblies = new();
     private static readonly object SessionLock = new();
     private static OverlaySession session;
-    internal static bool IsActive => !Assemblies.IsEmpty || session is not null;
+    internal static bool IsActive => !Assemblies.IsEmpty || (session is not null && !session.IsCompleted);
 
     internal static void ReceiveChunk(DATA package)
     {
@@ -179,6 +179,7 @@ internal static class EnhancedDragDropReceiver
         private readonly CancellationTokenSource transferCancellation = new();
         private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 250 };
         private bool completed;
+        private bool transferStarted;
 
         internal OverlaySession(ID sourceId, RemoteDragManifest manifest)
         {
@@ -188,7 +189,14 @@ internal static class EnhancedDragDropReceiver
 
         internal void Show()
         {
-            RefreshTargets();
+            try
+            {
+                RefreshTargets();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("RemoteDrag initial overlay refresh failed: " + ex.Message);
+            }
             refreshTimer.Tick += (_, _) =>
             {
                 try
@@ -213,6 +221,7 @@ internal static class EnhancedDragDropReceiver
             completed = true;
             refreshTimer.Stop();
             CloseForms();
+            transferStarted = true;
             _ = Task.Run(() => TransferAsync(target.FolderPath));
         }
 
@@ -227,7 +236,29 @@ internal static class EnhancedDragDropReceiver
             Logger.LogDebug("RemoteDrag cancelled.");
         }
 
+        internal bool IsCompleted => completed;
+
         private async Task TransferAsync(string targetDirectory)
+        {
+            try
+            {
+                await TransferCoreAsync(targetDirectory).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (SessionLock)
+                {
+                    if (ReferenceEquals(session, this))
+                    {
+                        session = null;
+                    }
+                }
+
+                transferCancellation.Dispose();
+            }
+        }
+
+        private async Task TransferCoreAsync(string targetDirectory)
         {
             var copied = 0;
             var failures = new List<string>();
@@ -339,7 +370,9 @@ internal static class EnhancedDragDropReceiver
         {
             if (completed) return;
             var targets = DiscoverTargets();
-            var desired = targets.ToDictionary(target => target.Hwnd);
+            var desired = targets
+                .GroupBy(target => target.Hwnd)
+                .ToDictionary(group => group.Key, group => group.First());
             for (var index = forms.Count - 1; index >= 0; index--)
             {
                 if (!desired.ContainsKey(forms[index].TargetHwnd))
@@ -353,9 +386,16 @@ internal static class EnhancedDragDropReceiver
                 var form = forms.FirstOrDefault(candidate => candidate.TargetHwnd == target.Hwnd);
                 if (form is null)
                 {
-                    form = new OverlayForm(target, target.Bounds, OnDrop, OnCancel);
-                    forms.Add(form);
-                    form.Show();
+                    try
+                    {
+                        form = new OverlayForm(target, target.Bounds, OnDrop, OnCancel);
+                        forms.Add(form);
+                        form.Show();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log("RemoteDrag overlay creation failed: " + ex.Message);
+                    }
                 }
                 else
                 {
@@ -369,7 +409,10 @@ internal static class EnhancedDragDropReceiver
             refreshTimer.Stop();
             refreshTimer.Dispose();
             transferCancellation.Cancel();
-            transferCancellation.Dispose();
+            if (!transferStarted)
+            {
+                transferCancellation.Dispose();
+            }
             CloseForms();
         }
 
@@ -381,12 +424,21 @@ internal static class EnhancedDragDropReceiver
                 dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")!);
                 foreach (var window in shell.Windows())
                 {
-                    var hwnd = (nint)(long)window.HWND;
-                    if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !TryGetActualWindowRect(hwnd, out var rect)) continue;
-                    var url = (string)window.LocationURL;
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile || !Directory.Exists(uri.LocalPath)) continue;
-                    var title = (string)window.LocationName;
-                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), uri.LocalPath, string.IsNullOrWhiteSpace(title) ? Path.GetFileName(uri.LocalPath) : title, GetDpiForWindow(hwnd)));
+                    try
+                    {
+                        var hwnd = (nint)(long)window.HWND;
+                        if (hwnd == 0 || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !TryGetActualWindowRect(hwnd, out var rect)) continue;
+                        var bounds = rect.ToRectangle();
+                        if (bounds.Width <= 0 || bounds.Height <= 0) continue;
+                        var url = (string)window.LocationURL;
+                        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile || !Directory.Exists(uri.LocalPath)) continue;
+                        var title = (string)window.LocationName;
+                        targets.Add(new ExplorerTarget(hwnd, bounds, uri.LocalPath, string.IsNullOrWhiteSpace(title) ? Path.GetFileName(uri.LocalPath) : title, GetDpiForWindow(hwnd)));
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogDebug("Explorer target skipped: " + ex.Message);
+                    }
                 }
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
@@ -411,7 +463,7 @@ internal static class EnhancedDragDropReceiver
                 this.onDrop = onDrop;
                 this.onCancel = onCancel;
                 TargetBounds = bounds;
-                zOrderAnchor = GetWindow(target.Hwnd, GW_HWNDPREV);
+                zOrderAnchor = GetExplorerPredecessor(target.Hwnd);
                 Bounds = bounds;
                 FormBorderStyle = FormBorderStyle.None;
                 ShowInTaskbar = false;
@@ -433,7 +485,7 @@ internal static class EnhancedDragDropReceiver
             {
                 var boundsChanged = TargetBounds != bounds;
                 var contentChanged = target.DisplayName != next.DisplayName || target.FolderPath != next.FolderPath || target.Dpi != next.Dpi;
-                var nextZOrderAnchor = GetWindow(next.Hwnd, GW_HWNDPREV);
+                var nextZOrderAnchor = GetExplorerPredecessor(next.Hwnd);
                 var zOrderChanged = zOrderAnchor != nextZOrderAnchor;
                 target = next;
                 zOrderAnchor = nextZOrderAnchor;
@@ -491,10 +543,17 @@ internal static class EnhancedDragDropReceiver
                     _ = SetWindowPos(Handle, insertAfter, Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
                 }
             }
+
+            private nint GetExplorerPredecessor(nint explorerHwnd)
+            {
+                var predecessor = GetWindow(explorerHwnd, GW_HWNDPREV);
+                return predecessor == Handle ? GetWindow(Handle, GW_HWNDPREV) : predecessor;
+            }
         }
 
         [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; internal Rectangle ToRectangle() => Rectangle.FromLTRB(Left, Top, Right, Bottom); }
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint hWnd);
+        [DllImport("user32.dll")] private static extern bool IsWindow(nint hWnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
         [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hWnd, uint attribute, out NativeRect value, int valueSize);
