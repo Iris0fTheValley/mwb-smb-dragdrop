@@ -53,4 +53,4 @@ $env:VCTargetsPath = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildT
 dotnet msbuild .\src\modules\MouseWithoutBorders\App\MouseWithoutBorders.csproj /m /p:Platform=x64 /p:Configuration=Debug /p:BuildProjectReferences=false
 ```
 
-The latest resulting `PowerToys.MouseWithoutBorders.dll` was deployed to both `C:\AgentWork\mwb-enhanced` directories. The two deployed DLLs had identical SHA-256 `310F213C2E4EBE8D3AD476474C86F034658B8E743CC43744B6A6500371B679E9`, and both processes were restarted in interactive Session 1 using `scripts\Manage-MwbEnhanced.ps1`. / 最新产物已部署到双方目录，hash 一致，双方均在交互 Session 1 重启。
+The latest resulting `PowerToys.MouseWithoutBorders.dll` was deployed to both `C:\AgentWork\mwb-enhanced` directories. The two deployed DLLs had identical SHA-256 `486FE1BEE1AE0D4368B0DE33A6DA4BD7E610ED13760F68B10F671FE48949A890`, and both processes were restarted in interactive Session 1 using `scripts\Manage-MwbEnhanced.ps1`. / 最新产物已部署到双方目录，hash 一致，双方均在交互 Session 1 重启。
