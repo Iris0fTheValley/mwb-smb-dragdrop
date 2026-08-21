@@ -5,7 +5,7 @@ namespace MouseWithoutBorders.EnhancedDragDrop;
 
 public sealed record ExplorerTarget(nint Hwnd, System.Drawing.Rectangle Bounds, string FolderPath, int ZOrder, bool IsVisible);
 
-/// <summary>Enumerates filesystem Explorer windows and the desktop without exposing unsupported Shell namespaces.</summary>
+/// <summary>Enumerates visible, non-minimized filesystem Explorer windows.</summary>
 [SupportedOSPlatform("windows")]
 public sealed class ExplorerTargetEnumerator
 {
@@ -18,12 +18,9 @@ public sealed class ExplorerTargetEnumerator
             nint hwnd = (nint)(long)window.HWND;
             if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd)) continue;
             string? path = TryGetFilesystemPath(window);
-            if (path is null || !GetWindowRect(hwnd, out var rect)) continue;
+            if (path is null || !TryGetActualWindowRect(hwnd, out var rect)) continue;
             targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), path, GetWindowZOrder(hwnd), true));
         }
-        var desktop = GetShellWindow();
-        if (desktop != 0 && GetWindowRect(desktop, out var desktopRect))
-            targets.Add(new ExplorerTarget(desktop, desktopRect.ToRectangle(), Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), int.MaxValue, true));
         return targets.OrderBy(target => target.ZOrder).ToArray();
     }
 
@@ -54,8 +51,15 @@ public sealed class ExplorerTargetEnumerator
     [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
     [DllImport("user32.dll")] private static extern nint GetTopWindow(nint hWnd);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hWnd, uint uCmd);
-    [DllImport("user32.dll")] private static extern nint GetShellWindow();
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
+    [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hWnd, uint attribute, out NativeRect rect, int size);
+    private const uint DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+    private static bool TryGetActualWindowRect(nint hwnd, out NativeRect rect)
+    {
+        return DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf<NativeRect>()) == 0
+            || GetWindowRect(hwnd, out rect);
+    }
 
     [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; public System.Drawing.Rectangle ToRectangle() => System.Drawing.Rectangle.FromLTRB(Left, Top, Right, Bottom); }
 }
