@@ -9,7 +9,7 @@ dotnet test EnhancedDragDrop.Tests\EnhancedDragDrop.Tests.csproj --no-restore
 Passed: 6, Failed: 0, Skipped: 0
 ```
 
-Covered cases include single and many-item manifests, mixed files/folders, Unicode paths, length-prefixed frames, multi-chunk manifests, duplicate chunks, invalid shares, drop/cancel state transitions, recursive streaming copy, and no-overwrite conflicts. / 覆盖单文件、多文件、文件与目录混合、Unicode 路径、分帧、多块、重复块、无效共享、放下/取消状态、递归流式复制和不覆盖冲突。
+Covered cases include single and many-item manifests, mixed files/folders, Unicode paths, length-prefixed frames, multi-chunk manifests, duplicate chunks, invalid shares, drop/cancel state transitions, recursive backend fixtures, and no-overwrite conflicts. / 覆盖单文件、多文件、文件与目录混合、Unicode 路径、分帧、多块、重复块、无效共享、放下/取消状态、递归后端 fixture 和不覆盖冲突。
 
 The seventh test ran the streaming backend against a real UNC source on PC-B (`\\192.168.1.7\ID-BLUEBERRY_C\AgentWork\mwb-smb-smoke-source\中文-テスト.txt`) and wrote the result to the PC-B local SSD.
 
@@ -37,13 +37,13 @@ After recovery, both logs reported the expected paired machine matrix, `Machine 
 
 ## Enhanced overlay and SMB fallback
 
-The enhanced receiver now treats Explorer overlays as target selection only. It enumerates visible, non-minimized filesystem Explorer windows plus Desktop, labels each overlay with the window name and folder path, and orders overlapping overlays by the original window Z-order. The overlay closes on drop, Escape, right-click cancel, or drag cancellation.
+The enhanced receiver now treats Explorer overlays as target selection only. It enumerates visible, non-minimized filesystem Explorer windows plus Desktop, labels each overlay with the window name, folder path, and native DPI. Each Explorer has exactly one overlay; the overlay closes on drop, Escape, right-click cancel, or drag cancellation.
 
 Each overlay is non-activating (`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`) and is placed immediately above its Explorer owner with `SWP_NOACTIVATE`; no TopMost window is introduced. The implementation does not subtract occluding rectangles or maintain a parallel visibility model. Windows decides whether the overlay is visible and hit-testable through the normal Z-order. / Overlay 使用不激活窗口样式并紧贴所属 Explorer 放置，不创建 TopMost 窗口；实现不再手工切割遮挡矩形，由 Windows 原生 Z-order 决定可见性和命中。
 
 The integrated copy path now calls Windows Shell `IFileOperation` with `IShellItem` objects created from SMB/UNC parsing names. Managed recursive `FileStream` copying, partial destination names, and custom conflict/progress dialogs were removed from the MWB integration. / 集成复制路径现在将 SMB/UNC 路径创建为 `IShellItem` 并调用 Windows Shell `IFileOperation`；集成 MWB 中已移除托管递归 `FileStream`、partial 目标名以及自制冲突/进度对话框。
 
-File bytes never enter MWB packets. The target first attempts the normal `source UNC -> target local directory` streaming SMB copy. When the target account is denied read access to the source share, the target sends only a small versioned target-directory request using the existing enhanced metadata chunk channel. The source then copies its local files to the target machine's drive share over SMB using the source account's existing access. The fallback is symmetric because the source/target roles are derived from the active drag and connected socket address.
+File bytes never enter MWB packets. The target first calls Shell `IFileOperation` with the source UNC item and local target directory. When the target account is denied read access to the source share, the target sends only a small versioned target-directory request using the existing enhanced metadata chunk channel. The source then calls the same Shell operation with local source items and the target machine's SMB share. The fallback is symmetric because the source/target roles are derived from the active drag and connected socket address.
 
 The MWB app was rebuilt on PC-B with the prebuilt native project references:
 
@@ -53,4 +53,4 @@ $env:VCTargetsPath = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildT
 dotnet msbuild .\src\modules\MouseWithoutBorders\App\MouseWithoutBorders.csproj /m /p:Platform=x64 /p:Configuration=Debug /p:BuildProjectReferences=false
 ```
 
-The latest resulting `PowerToys.MouseWithoutBorders.dll` was deployed to both `C:\AgentWork\mwb-enhanced` directories. The two deployed DLLs had identical SHA-256 `421A39C24251BAABCEACF14C062FC6B927C591F1D1882C72ED81D6E2EB891A0D`, and both processes were restarted in interactive Session 1 using `scripts\Manage-MwbEnhanced.ps1`. / 最新产物已部署到双方目录，hash 一致，双方均在交互 Session 1 重启。
+The latest resulting `PowerToys.MouseWithoutBorders.dll` was deployed to both `C:\AgentWork\mwb-enhanced` directories. The two deployed DLLs had identical SHA-256 `310F213C2E4EBE8D3AD476474C86F034658B8E743CC43744B6A6500371B679E9`, and both processes were restarted in interactive Session 1 using `scripts\Manage-MwbEnhanced.ps1`. / 最新产物已部署到双方目录，hash 一致，双方均在交互 Session 1 重启。
