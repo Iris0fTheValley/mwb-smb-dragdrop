@@ -37,7 +37,7 @@ After recovery, both logs reported the expected paired machine matrix, `Machine 
 
 ## Enhanced overlay and SMB fallback
 
-The enhanced receiver now treats Explorer overlays as target selection only. It enumerates visible, non-minimized filesystem Explorer windows plus Desktop, labels each overlay with the window name, folder path, and native DPI. Each Explorer has exactly one overlay; the overlay closes on drop, Escape, right-click cancel, or drag cancellation.
+The enhanced receiver now treats Explorer overlays as target selection only. It enumerates visible, non-minimized filesystem Explorer windows, labels each overlay with the window name, folder path, and native DPI, and does not create a synthetic full-screen Desktop overlay. Each Explorer has exactly one overlay; the overlay closes on drop, Escape, right-click cancel, or drag cancellation.
 
 Each overlay is non-activating (`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`) and is placed immediately above its Explorer owner with `SWP_NOACTIVATE`; no TopMost window is introduced. The implementation does not subtract occluding rectangles or maintain a parallel visibility model. Windows decides whether the overlay is visible and hit-testable through the normal Z-order. / Overlay 使用不激活窗口样式并紧贴所属 Explorer 放置，不创建 TopMost 窗口；实现不再手工切割遮挡矩形，由 Windows 原生 Z-order 决定可见性和命中。
 

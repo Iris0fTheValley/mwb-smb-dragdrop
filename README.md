@@ -10,13 +10,13 @@ This public repository contains an enhanced Explorer-to-Explorer file drag flow 
 
 1. `FormHelper` reads the complete `DataFormats.FileDrop` `string[]` and passes every file/folder to the existing drag state machine.
 2. The source creates a GUID-based manifest and sends UTF-8 chunks containing only source machine, paths, directory flags, and drag ID.
-3. The target reassembles and validates chunks, enumerates visible non-minimized filesystem Explorer windows plus Desktop, and shows temporary target overlays.
+3. The target reassembles and validates chunks, enumerates visible non-minimized filesystem Explorer windows, and shows one temporary overlay per Explorer HWND. The Windows desktop is not represented by a synthetic full-screen overlay.
 4. MouseUp selects one target directory. The target resolves the source drive to the established `<machine>_<drive>` share and streams files/folders over UNC/SMB without reading the whole file into memory.
 5. Esc, right-click, return-to-source, duplicate IDs, malformed manifests, unavailable shares, conflicts, cancellation, and partial failures are reported and logged.
 
-目标端会为每个可用 Explorer 窗口创建独立的半透明 Overlay。Overlay 使用 Windows 返回的 Bounds 和 DPI，一对一覆盖 Explorer；它紧贴 Explorer 正上方但低于原本位于 Explorer 上方的窗口，因此重叠和遮挡由 Windows 自己处理。窗口移动、缩放、最小化或关闭时每 250 ms 同步。Overlay 不抢焦点，MouseUp 只用于选择目录。
+目标端会为每个可用 Explorer 窗口创建独立的半透明 Overlay，不创建合成的全屏 Desktop Overlay。Overlay 使用 Windows 返回的 Bounds 和 DPI，一对一覆盖 Explorer；它紧贴 Explorer 正上方但低于原本位于 Explorer 上方的窗口，因此重叠和遮挡由 Windows 自己处理。窗口移动、缩放、最小化或关闭时每 250 ms 同步。Overlay 不抢焦点，MouseUp 只用于选择目录。
 
-The target shows one non-activating translucent overlay per usable Explorer window. Each overlay uses the native Explorer bounds/DPI and is placed immediately above its Explorer owner while remaining below windows that were already above it, so Windows handles overlap, occlusion, and hit-testing. It refreshes every 250 ms as windows move, resize, minimize, or close. MouseUp selects the directory; it does not replace MWB input handling.
+The target shows one non-activating translucent overlay per usable Explorer window; it does not create a synthetic full-screen desktop overlay. Each overlay uses the native Explorer bounds/DPI and is placed immediately above its Explorer owner while remaining below windows that were already above it, so Windows handles overlap, occlusion, and hit-testing. It refreshes every 250 ms as windows move, resize, minimize, or close. MouseUp selects the directory; it does not replace MWB input handling.
 
 文件落盘优先调用 Windows Shell `IFileOperation`，源 SMB/UNC 路径和目标目录都作为 Shell item 交给系统。Windows 负责递归目录、原生进度、冲突、错误和取消交互；MWB 只负责 manifest、SMB 路径解析和把目标目录传回源端。
 
