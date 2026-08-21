@@ -406,10 +406,13 @@ internal static class EnhancedDragDropReceiver
         private static IReadOnlyList<ExplorerTarget> DiscoverTargets()
         {
             var targets = new List<ExplorerTarget>();
+            dynamic shell = null;
+            dynamic windows = null;
             try
             {
-                dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")!);
-                foreach (var window in shell.Windows())
+                shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")!);
+                windows = shell.Windows();
+                foreach (var window in windows)
                 {
                     try
                     {
@@ -426,11 +429,28 @@ internal static class EnhancedDragDropReceiver
                     {
                         Logger.LogDebug("Explorer target skipped: " + ex.Message);
                     }
+                    finally
+                    {
+                        ReleaseComObject(window);
+                    }
                 }
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
+            finally
+            {
+                ReleaseComObject(windows);
+                ReleaseComObject(shell);
+            }
             Logger.LogDebug("ExplorerTargets discovered: " + string.Join("; ", targets.Select(target => $"{target.Hwnd}:{target.DisplayName}:{target.FolderPath}:{target.Bounds}")));
             return targets;
+        }
+
+        private static void ReleaseComObject(object value)
+        {
+            if (value is not null && Marshal.IsComObject(value))
+            {
+                Marshal.FinalReleaseComObject(value);
+            }
         }
 
         private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath, string DisplayName, uint Dpi);

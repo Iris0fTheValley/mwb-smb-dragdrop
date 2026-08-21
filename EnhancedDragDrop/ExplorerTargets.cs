@@ -13,15 +13,39 @@ public sealed class ExplorerTargetEnumerator
     {
         var targets = new List<ExplorerTarget>();
         dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")!)!;
-        foreach (var window in shell.Windows())
+        dynamic windows = shell.Windows();
+        try
         {
-            nint hwnd = (nint)(long)window.HWND;
-            if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd)) continue;
-            string? path = TryGetFilesystemPath(window);
-            if (path is null || !TryGetActualWindowRect(hwnd, out var rect)) continue;
-            targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), path, GetWindowZOrder(hwnd), true));
+            foreach (var window in windows)
+            {
+                try
+                {
+                    nint hwnd = (nint)(long)window.HWND;
+                    if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd)) continue;
+                    string? path = TryGetFilesystemPath(window);
+                    if (path is null || !TryGetActualWindowRect(hwnd, out var rect)) continue;
+                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), path, GetWindowZOrder(hwnd), true));
+                }
+                finally
+                {
+                    ReleaseComObject(window);
+                }
+            }
+        }
+        finally
+        {
+            ReleaseComObject(windows);
+            ReleaseComObject(shell);
         }
         return targets.OrderBy(target => target.ZOrder).ToArray();
+    }
+
+    private static void ReleaseComObject(object value)
+    {
+        if (value is not null && Marshal.IsComObject(value))
+        {
+            Marshal.FinalReleaseComObject(value);
+        }
     }
 
     private static string? TryGetFilesystemPath(dynamic window)
