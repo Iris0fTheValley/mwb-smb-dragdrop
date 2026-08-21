@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -76,13 +77,22 @@ internal static class EnhancedDragDropReceiver
         Assemblies.TryRemove(dragId, out _);
         try
         {
-            var manifest = JsonSerializer.Deserialize<RemoteDragManifest>(Encoding.UTF8.GetString(assembly.Combine()), JsonOptions);
-            if (manifest is null || manifest.Version != 1 || manifest.DragId != dragId || string.IsNullOrWhiteSpace(manifest.SourceMachine) || manifest.Items.Count == 0)
+            var json = Encoding.UTF8.GetString(assembly.Combine());
+            var manifest = JsonSerializer.Deserialize<RemoteDragManifest>(json, JsonOptions);
+            if (manifest is not null && manifest.Version == 1 && manifest.DragId == dragId && !string.IsNullOrWhiteSpace(manifest.SourceMachine) && manifest.Items.Count > 0)
             {
-                throw new FormatException("RemoteDrag manifest validation failed.");
+                Common.DoSomethingInUIThread(() => BeginOverlay(package.Src, manifest));
+                Logger.LogDebug($"RemoteDrag manifest received: DragId={dragId}, SourceMachine={manifest.SourceMachine}, ItemCount={manifest.Items.Count}");
+                return;
             }
-            Common.DoSomethingInUIThread(() => BeginOverlay(package.Src, manifest));
-            Logger.LogDebug($"RemoteDrag manifest received: DragId={dragId}, SourceMachine={manifest.SourceMachine}, ItemCount={manifest.Items.Count}");
+
+            var request = JsonSerializer.Deserialize<RemoteDragPushRequest>(json, JsonOptions);
+            if (request is null || request.Version != 2 || request.DragId != dragId || string.IsNullOrWhiteSpace(request.TargetDirectory))
+            {
+                throw new FormatException("RemoteDrag payload validation failed.");
+            }
+
+            EnhancedDragDropAdapter.ReceivePushRequest(package.Src, package.MachineName, json);
         }
         catch (Exception ex)
         {
@@ -167,7 +177,7 @@ internal static class EnhancedDragDropReceiver
 
         internal void Show()
         {
-            foreach (var target in DiscoverTargets())
+            foreach (var target in DiscoverTargets().OrderByDescending(target => target.ZOrder))
             {
                 var form = new OverlayForm(target, OnDrop, OnCancel);
                 forms.Add(form);
@@ -238,7 +248,28 @@ internal static class EnhancedDragDropReceiver
                     Logger.Log("Transfer failed: " + ex.Message);
                 }
             }
+            if (copied == 0 && failures.Any(failure => failure.StartsWith("SMB access denied:", StringComparison.Ordinal) || failure.StartsWith("Source item is unavailable over SMB:", StringComparison.Ordinal)))
+            {
+                RequestSourcePush(targetDirectory);
+                return;
+            }
+
             Common.ShowToolTip(failures.Count == 0 ? $"Remote drag complete ({copied} item(s))." : $"Remote drag: {copied} copied, {failures.Count} failed.", 4000, failures.Count == 0 ? ToolTipIcon.Info : ToolTipIcon.Warning, true);
+        }
+
+        private void RequestSourcePush(string targetDirectory)
+        {
+            var request = new RemoteDragPushRequest { Version = 2, DragId = manifest.DragId, TargetDirectory = Path.GetFullPath(targetDirectory) };
+            var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request, JsonOptions));
+            var total = Math.Max(1, (payload.Length + 19) / 20);
+            for (var index = 0; index < total; index++)
+            {
+                var start = index * 20;
+                var length = Math.Min(20, payload.Length - start);
+                Common.SendEnhancedDragChunk(sourceId, manifest.DragId, index, total, payload.AsSpan(start, length).ToArray());
+            }
+            Logger.LogDebug($"RemoteDrag source SMB read denied; requested source push to {targetDirectory}.");
+            Common.ShowToolTip("Remote drag: source is transferring via SMB.", 4000, ToolTipIcon.Info, true);
         }
 
         private static async Task CopyDirectoryAsync(string source, string destination, CancellationToken cancellationToken)
@@ -300,17 +331,22 @@ internal static class EnhancedDragDropReceiver
                     if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !GetWindowRect(hwnd, out var rect)) continue;
                     var url = (string)window.LocationURL;
                     if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile || !Directory.Exists(uri.LocalPath)) continue;
-                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), uri.LocalPath));
+                    var title = (string)window.LocationName;
+                    targets.Add(new ExplorerTarget(hwnd, rect.ToRectangle(), uri.LocalPath, string.IsNullOrWhiteSpace(title) ? Path.GetFileName(uri.LocalPath) : title, GetZOrder(hwnd)));
                 }
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
             var desktop = GetDesktopWindow();
             if (desktop != 0 && GetWindowRect(desktop, out var desktopRect))
-                targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)));
+            {
+                var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), desktopPath, "Desktop", int.MaxValue));
+            }
+            Logger.LogDebug("ExplorerTargets discovered: " + string.Join("; ", targets.Select(target => $"{target.Hwnd}:{target.DisplayName}:{target.FolderPath}:{target.Bounds}")));
             return targets;
         }
 
-        private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath);
+        private sealed record ExplorerTarget(nint Hwnd, Rectangle Bounds, string FolderPath, string DisplayName, int ZOrder);
 
         private sealed class OverlayForm : System.Windows.Forms.Form
         {
@@ -333,7 +369,7 @@ internal static class EnhancedDragDropReceiver
                 MouseLeave += (_, _) => { BackColor = Color.DeepSkyBlue; Opacity = 0.18; };
                 MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) onDrop(target); else if (e.Button == MouseButtons.Right) onCancel(); };
                 KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) onCancel(); };
-                Paint += (_, e) => { using var pen = new Pen(Color.White, 3); e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3); TextRenderer.DrawText(e.Graphics, target.FolderPath, Font, new Point(12, 12), Color.White, Color.FromArgb(160, 20, 20, 20)); };
+                Paint += (_, e) => { using var pen = new Pen(Color.White, 3); e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3); TextRenderer.DrawText(e.Graphics, target.DisplayName + Environment.NewLine + target.FolderPath, Font, new Point(12, 12), Color.White, Color.FromArgb(160, 20, 20, 20)); };
             }
         }
 
@@ -342,6 +378,18 @@ internal static class EnhancedDragDropReceiver
         [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
         [DllImport("user32.dll")] private static extern nint GetDesktopWindow();
+        [DllImport("user32.dll")] private static extern nint GetWindow(nint hWnd, uint uCmd);
+
+        private static int GetZOrder(nint hwnd)
+        {
+            const uint GW_HWNDPREV = 3;
+            var rank = 0;
+            for (var current = GetWindow(hwnd, GW_HWNDPREV); current != 0 && rank < 10000; current = GetWindow(current, GW_HWNDPREV))
+            {
+                rank++;
+            }
+            return rank;
+        }
     }
 
     private sealed record RemoteDragManifest
@@ -356,6 +404,13 @@ internal static class EnhancedDragDropReceiver
     {
         public string LocalPath { get; init; } = string.Empty;
         public bool IsDirectory { get; init; }
+    }
+
+    private sealed record RemoteDragPushRequest
+    {
+        public int Version { get; init; }
+        public Guid DragId { get; init; }
+        public string TargetDirectory { get; init; } = string.Empty;
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
