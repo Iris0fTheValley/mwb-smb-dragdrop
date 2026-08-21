@@ -21,15 +21,36 @@ namespace MouseWithoutBorders.Core;
 internal static class ShellFileOperation
 {
     private const uint FOFX_SHOWELEVATIONPROMPT = 0x00010000;
-    private const uint FOFX_NOCONFIRMATION = 0x00100000;
     private const uint FOFX_NOCOPYSECURITYATTRIBS = 0x08000000;
-    private const uint FOFX_REQUIREELEVATION = 0x10000000;
 
     internal static Task CopyAsync(IReadOnlyList<string> sources, string destinationDirectory, nint ownerWindow, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sources);
         if (sources.Count == 0) return Task.CompletedTask;
-        return Task.Run(() => Copy(sources, destinationDirectory, ownerWindow, cancellationToken), cancellationToken);
+        var completion = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new System.Threading.Thread(() =>
+        {
+            try
+            {
+                Copy(sources, destinationDirectory, ownerWindow, cancellationToken);
+                completion.TrySetResult(new object());
+            }
+            catch (OperationCanceledException ex)
+            {
+                completion.TrySetCanceled(ex.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "MWB Shell File Operation",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return completion.Task;
     }
 
     private static void Copy(IReadOnlyList<string> sources, string destinationDirectory, nint ownerWindow, CancellationToken cancellationToken)
@@ -83,6 +104,8 @@ internal static class ShellFileOperation
     [ComImport, Guid("947AAB5F-0A5C-4C13-B4D6-4BF7836FC9F8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IFileOperation
     {
+        void Advise([MarshalAs(UnmanagedType.Interface)] object progressSink, out uint cookie);
+        void Unadvise(uint cookie);
         void SetOperationFlags(uint operationFlags);
         void SetProgressMessage([MarshalAs(UnmanagedType.LPWStr)] string progressMessage);
         void SetProgressDialog([MarshalAs(UnmanagedType.Interface)] object progressDialog);
