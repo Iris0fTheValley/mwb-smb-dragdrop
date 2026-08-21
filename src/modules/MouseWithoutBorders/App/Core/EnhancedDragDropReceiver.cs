@@ -372,7 +372,7 @@ internal static class EnhancedDragDropReceiver
                 foreach (var window in shell.Windows())
                 {
                     var hwnd = (nint)(long)window.HWND;
-                    if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !GetWindowRect(hwnd, out var rect)) continue;
+                    if (hwnd == 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !TryGetActualWindowRect(hwnd, out var rect)) continue;
                     var url = (string)window.LocationURL;
                     if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile || !Directory.Exists(uri.LocalPath)) continue;
                     var title = (string)window.LocationName;
@@ -381,7 +381,7 @@ internal static class EnhancedDragDropReceiver
             }
             catch (Exception ex) { Logger.Log("Explorer target enumeration failed: " + ex.Message); }
             var desktop = GetDesktopWindow();
-            if (desktop != 0 && GetWindowRect(desktop, out var desktopRect))
+            if (desktop != 0 && TryGetActualWindowRect(desktop, out var desktopRect))
             {
                 var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
                 targets.Insert(0, new ExplorerTarget(desktop, desktopRect.ToRectangle(), desktopPath, "Desktop", GetDpiForWindow(desktop)));
@@ -456,11 +456,23 @@ internal static class EnhancedDragDropReceiver
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint hWnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(nint hWnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
+        [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(nint hWnd, uint attribute, out NativeRect value, int valueSize);
         [DllImport("user32.dll")] private static extern nint GetDesktopWindow();
         [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hWnd);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
         private const uint SWP_NOACTIVATE = 0x0010;
         private const uint SWP_SHOWWINDOW = 0x0040;
+        private const uint DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+        private static bool TryGetActualWindowRect(nint hwnd, out NativeRect rect)
+        {
+            if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf<NativeRect>()) == 0)
+            {
+                return true;
+            }
+
+            return GetWindowRect(hwnd, out rect);
+        }
     }
 
     private sealed record RemoteDragManifest
