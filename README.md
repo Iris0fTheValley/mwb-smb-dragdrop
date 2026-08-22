@@ -64,4 +64,6 @@ The default remote target is the existing `pc-b` SSH alias and the default inter
 
 ## License
 
-The added code is MIT licensed. The MWB snapshot retains the Microsoft PowerToys license headers and is derived from `microsoft/PowerToys`.
+The original code in this repository is licensed under the GNU General Public License, version 3 or any later version (GPL-3.0-or-later). See [LICENSE](LICENSE) for the full license text.
+
+The MWB snapshot retains the original Microsoft PowerToys license headers and is derived from `microsoft/PowerToys`; those upstream files remain subject to their original licenses. The GPL-3.0-or-later license applies to the original code added in this repository.
