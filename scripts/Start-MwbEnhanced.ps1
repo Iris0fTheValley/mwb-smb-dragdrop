@@ -38,6 +38,16 @@ function Stop-LocalMwb {
     Get-CimInstance Win32_Process |
         Where-Object { $_.ExecutablePath -and $paths -contains ([IO.Path]::GetFullPath($_.ExecutablePath)) } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+    $enhancedPath = [IO.Path]::GetFullPath($localMain)
+    $portOwners = Get-NetTCPConnection -LocalPort 15101,15102 -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($ownerPid in $portOwners) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+        if ($process -and $process.Name -in @('MouseWithoutBorders.exe', 'PowerToys.MouseWithoutBorders.exe') -and $process.ExecutablePath -ne $enhancedPath) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Start-LocalMwb {
@@ -59,6 +69,15 @@ $helper = Join-Path $RemoteDir 'PowerToys.MouseWithoutBordersHelper.exe'
 Get-CimInstance Win32_Process |
     Where-Object { $_.ExecutablePath -and $_.ExecutablePath -in @([IO.Path]::GetFullPath($RemoteMain), [IO.Path]::GetFullPath($helper)) } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+$enhancedPath = [IO.Path]::GetFullPath($RemoteMain)
+$portOwners = Get-NetTCPConnection -LocalPort 15101,15102 -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique
+foreach ($ownerPid in $portOwners) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+    if ($process -and $process.Name -in @('MouseWithoutBorders.exe', 'PowerToys.MouseWithoutBorders.exe') -and $process.ExecutablePath -ne $enhancedPath) {
+        Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+    }
+}
 Write-Output 'REMOTE STOPPED'
 '@
 }
@@ -67,11 +86,21 @@ function Invoke-RemoteStart {
     Invoke-RemoteStop
     Invoke-RemoteScript -Variables @{ RemoteMain = $remoteMain; RemoteDir = $RemoteInstallDir; InteractiveUser = $RemoteInteractiveUser } -Script @'
 if (-not (Test-Path -LiteralPath $RemoteMain)) { throw "Remote MWB binary not found: $RemoteMain" }
-$process = Start-Process -FilePath $RemoteMain -WorkingDirectory $RemoteDir -PassThru
-Start-Sleep -Seconds 2
-$current = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)"
-if (-not $current -or $current.SessionId -eq 0) { throw "Remote MWB did not start in an interactive session." }
-Write-Output ("REMOTE STARTED PID={0} SESSION={1} USER={2}" -f $process.Id, $current.SessionId, $InteractiveUser)
+$taskName = 'MwbEnhancedOneClick-' + [Guid]::NewGuid().ToString('N')
+$action = New-ScheduledTaskAction -Execute $RemoteMain -WorkingDirectory $RemoteDir
+$principal = New-ScheduledTaskPrincipal -UserId $InteractiveUser -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
+try {
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 3
+    $current = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq [IO.Path]::GetFullPath($RemoteMain) } | Select-Object -First 1
+    if (-not $current) { throw 'Remote MWB did not start.' }
+    if ($current.SessionId -eq 0) { throw "Remote MWB started in Session 0 (PID=$($current.ProcessId))." }
+    Write-Output ("REMOTE STARTED PID={0} SESSION={1} USER={2}" -f $current.ProcessId, $current.SessionId, $InteractiveUser)
+}
+finally {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+}
 '@
 }
 
