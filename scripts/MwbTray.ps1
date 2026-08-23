@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory)]
     [string]$HelperPath,
 
+    [string]$SettingsPath = '',
+
     [int]$TcpPort = 15101
 )
 
@@ -15,6 +17,11 @@ Add-Type -AssemblyName System.Drawing
 
 $script:mainPath = [IO.Path]::GetFullPath($MainPath)
 $script:helperPath = [IO.Path]::GetFullPath($HelperPath)
+$script:settingsPath = if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
+    Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseWithoutBorders\settings.json'
+} else {
+    [IO.Path]::GetFullPath($SettingsPath)
+}
 $script:busy = $false
 $script:currentState = ''
 $script:mutex = $null
@@ -34,13 +41,15 @@ try {
     $script:statusItem = New-Object Windows.Forms.ToolStripMenuItem
     $script:statusItem.Enabled = $false
 
-    $script:restartItem = New-Object Windows.Forms.ToolStripMenuItem('重启 MWB / Restart MWB')
-    $script:stopItem = New-Object Windows.Forms.ToolStripMenuItem('关闭 MWB / Stop MWB')
-    $script:exitItem = New-Object Windows.Forms.ToolStripMenuItem('退出托盘 / Exit tray')
+    $script:layoutItem = New-Object Windows.Forms.ToolStripMenuItem('Screen layout...')
+    $script:restartItem = New-Object Windows.Forms.ToolStripMenuItem('Restart MWB')
+    $script:stopItem = New-Object Windows.Forms.ToolStripMenuItem('Stop MWB')
+    $script:exitItem = New-Object Windows.Forms.ToolStripMenuItem('Exit tray')
 
     $menu = New-Object Windows.Forms.ContextMenuStrip
     [void]$menu.Items.Add($script:statusItem)
     [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
+    [void]$menu.Items.Add($script:layoutItem)
     [void]$menu.Items.Add($script:restartItem)
     [void]$menu.Items.Add($script:stopItem)
     [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
@@ -58,8 +67,8 @@ try {
         $main = $processes | Where-Object { [IO.Path]::GetFullPath($_.ExecutablePath) -eq $script:mainPath } | Select-Object -First 1
         $helper = $processes | Where-Object { [IO.Path]::GetFullPath($_.ExecutablePath) -eq $script:helperPath } | Select-Object -First 1
 
-        if (-not $main) { return '已停止 / Stopped' }
-        if (-not $helper) { return '运行中，Helper 缺失 / Running, helper missing' }
+        if (-not $main) { return 'Stopped' }
+        if (-not $helper) { return 'Running, helper missing' }
 
         $connected = $false
         try {
@@ -69,15 +78,15 @@ try {
             $connected = $false
         }
 
-        if ($connected) { return '已连接 / Connected' }
-        return "运行中，未连接 / Running, disconnected (TCP $TcpPort/$($TcpPort + 1))"
+        if ($connected) { return 'Connected' }
+        return "Running, disconnected (TCP $TcpPort/$($TcpPort + 1))"
     }
 
     function Update-MwbState {
         $state = Get-MwbState
         if ($state -eq $script:currentState) { return }
         $script:currentState = $state
-        $script:statusItem.Text = "状态 / Status: $state"
+        $script:statusItem.Text = "Status: $state"
         $script:notifyIcon.Text = "MWB: $state"
         if ($state -like '*Connected*') {
             $script:notifyIcon.Icon = [Drawing.SystemIcons]::Information
@@ -87,6 +96,134 @@ try {
         }
         else {
             $script:notifyIcon.Icon = [Drawing.SystemIcons]::Warning
+        }
+    }
+
+    function Get-MwbSettings {
+        if (-not (Test-Path -LiteralPath $script:settingsPath)) {
+            throw "MWB settings not found: $script:settingsPath"
+        }
+        $settings = Get-Content -LiteralPath $script:settingsPath -Raw | ConvertFrom-Json
+        if (-not $settings.properties) {
+            throw 'MWB settings have no properties object.'
+        }
+        return $settings
+    }
+
+    function Get-MachineNames([object]$Settings) {
+        $pool = [string]$Settings.properties.MachinePool.value
+        $names = @($pool -split ',' | ForEach-Object {
+            if ($_ -match '^([^:]+):\d+$') { $Matches[1] }
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($names.Count -lt 2) {
+            throw 'At least two machines must be paired before screen layout can be configured.'
+        }
+        return @($names | Select-Object -Unique)
+    }
+
+    function Get-MatrixValues([object]$Settings) {
+        $values = @($Settings.properties.MachineMatrixString)
+        while ($values.Count -lt 4) { $values += '' }
+        return @($values[0..3] | ForEach-Object { [string]$_ })
+    }
+
+    function Save-MwbSettings([object]$Settings) {
+        $temporary = "$script:settingsPath.mwb-tray.tmp"
+        $backup = "$script:settingsPath.mwb-tray.bak"
+        Copy-Item -LiteralPath $script:settingsPath -Destination $backup -Force
+        [IO.File]::WriteAllText($temporary, ($Settings | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporary -Destination $script:settingsPath -Force
+    }
+
+    function Show-MatrixDialog {
+        $settings = Get-MwbSettings
+        $machineNames = Get-MachineNames $settings
+        $current = Get-MatrixValues $settings
+        $oneRow = [bool]$settings.properties.MatrixOneRow.value
+
+        $form = New-Object Windows.Forms.Form
+        $form.Text = 'Mouse Without Borders - Screen layout'
+        $form.StartPosition = 'CenterScreen'
+        $form.FormBorderStyle = 'FixedDialog'
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $form.ClientSize = New-Object Drawing.Size(520, 300)
+
+        $hint = New-Object Windows.Forms.Label
+        $hint.Text = 'Configure the four MWB positions. In one-row mode they are ordered left to right.'
+        $hint.AutoSize = $true
+        $hint.Location = New-Object Drawing.Point(16, 16)
+        $form.Controls.Add($hint)
+
+        $oneRowBox = New-Object Windows.Forms.CheckBox
+        $oneRowBox.Text = 'One row (left to right)'
+        $oneRowBox.AutoSize = $true
+        $oneRowBox.Checked = $oneRow
+        $oneRowBox.Location = New-Object Drawing.Point(16, 45)
+        $form.Controls.Add($oneRowBox)
+
+        $layout = New-Object Windows.Forms.TableLayoutPanel
+        $layout.ColumnCount = 2
+        $layout.RowCount = 4
+        $layout.Location = New-Object Drawing.Point(16, 78)
+        $layout.Size = New-Object Drawing.Size(488, 130)
+        $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Absolute, 180)))
+        $layout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent, 100)))
+        $labels = @('Position 1 (top-left / first)', 'Position 2 (top-right / second)', 'Position 3 (bottom-left / third)', 'Position 4 (bottom-right / fourth)')
+        $boxes = @()
+        for ($i = 0; $i -lt 4; $i++) {
+            $label = New-Object Windows.Forms.Label
+            $label.Text = $labels[$i]
+            $label.AutoSize = $true
+            $label.Anchor = 'Left'
+            $layout.Controls.Add($label, 0, $i)
+
+            $box = New-Object Windows.Forms.ComboBox
+            $box.DropDownStyle = 'DropDownList'
+            $box.Width = 270
+            [void]$box.Items.Add('(empty)')
+            foreach ($name in $machineNames) { [void]$box.Items.Add($name) }
+            $selected = $box.Items.IndexOf($current[$i])
+            $box.SelectedIndex = if ($selected -ge 0) { $selected } else { 0 }
+            $boxes += $box
+            $layout.Controls.Add($box, 1, $i)
+        }
+        $form.Controls.Add($layout)
+
+        $ok = New-Object Windows.Forms.Button
+        $ok.Text = 'Save'
+        $ok.DialogResult = [Windows.Forms.DialogResult]::None
+        $ok.Location = New-Object Drawing.Point(326, 238)
+        $ok.add_Click({
+            $chosen = @($boxes | ForEach-Object { if ($_.SelectedIndex -le 0) { '' } else { [string]$_.SelectedItem } })
+            $duplicates = @($chosen | Where-Object { $_ } | Group-Object | Where-Object Count -gt 1)
+            if ($duplicates.Count -gt 0) {
+                [Windows.Forms.MessageBox]::Show('Each machine can appear only once in the matrix.', 'MWB', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+                return
+            }
+            $settings.properties.MachineMatrixString = $chosen
+            $settings.properties.MatrixOneRow.value = [bool]$oneRowBox.Checked
+            $form.Tag = $settings
+            $form.DialogResult = [Windows.Forms.DialogResult]::OK
+        })
+        $form.Controls.Add($ok)
+
+        $cancel = New-Object Windows.Forms.Button
+        $cancel.Text = 'Cancel'
+        $cancel.DialogResult = [Windows.Forms.DialogResult]::Cancel
+        $cancel.Location = New-Object Drawing.Point(414, 238)
+        $form.Controls.Add($cancel)
+        $form.AcceptButton = $ok
+        $form.CancelButton = $cancel
+
+        try {
+            if ($form.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
+                return $form.Tag
+            }
+            return $null
+        }
+        finally {
+            $form.Dispose()
         }
     }
 
@@ -114,6 +251,14 @@ try {
         }
     }
 
+    function Configure-MwbLayout {
+        $updated = Show-MatrixDialog
+        if ($null -eq $updated) { return }
+        Stop-Mwb
+        Save-MwbSettings $updated
+        Start-Mwb
+    }
+
     function Invoke-MwbAction([scriptblock]$action) {
         if ($script:busy) { return }
         $script:busy = $true
@@ -133,6 +278,7 @@ try {
         }
     }
 
+    $script:layoutItem.add_Click({ Invoke-MwbAction { Configure-MwbLayout } })
     $script:restartItem.add_Click({ Invoke-MwbAction { Start-Mwb } })
     $script:stopItem.add_Click({ Invoke-MwbAction { Stop-Mwb } })
     $script:notifyIcon.add_DoubleClick({ Invoke-MwbAction { Start-Mwb } })

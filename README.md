@@ -64,6 +64,8 @@ The default remote target is the existing `pc-b` SSH alias and the default inter
 
 `Start-MwbEnhanced.ps1` also synchronizes the MWB pairing key, machine pool, and TCP base port before starting. The default base port is `15101`, so both peers must listen on `15101` and `15102`. It removes stale legacy MWB processes, verifies an established peer connection, and starts `MwbTray.ps1` in the interactive session on both machines. The tray status icon reports stopped, running/disconnected, or connected; its context menu provides quick restart and stop actions for that machine.
 
+The tray context menu also includes `Screen layout...`. It edits the same `MachineMatrixString` and `MatrixOneRow` settings used by the original MWB UI: one-row mode orders four slots from left to right; two-row mode uses top-left, top-right, bottom-left, and bottom-right. The layout is saved with a backup and applied after the local MWB process restarts; the enhanced launcher propagates a valid local layout to the peer during the next coordinated restart.
+
 ## License
 
 The original code in this repository is licensed under the GNU General Public License, version 3 or any later version (GPL-3.0-or-later). See [LICENSE](LICENSE) for the full license text.

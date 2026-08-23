@@ -52,6 +52,28 @@ function Invoke-RemoteScript {
     return @($output | ForEach-Object { [string]$_ })
 }
 
+function Write-RemoteFile {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [byte[]]$Bytes
+    )
+
+    $payload = [Convert]::ToBase64String($Bytes)
+    $body = @(
+        '$ErrorActionPreference = ''Stop'''
+        '$ProgressPreference = ''SilentlyContinue'''
+        ('$TargetPath = ''' + ($Path -replace "'", "''") + '''')
+        '$raw = [Console]::In.ReadToEnd()'
+        '[IO.File]::WriteAllBytes($TargetPath, [Convert]::FromBase64String($raw))'
+    ) -join [Environment]::NewLine
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+    $output = $payload | & ssh $RemoteHost "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $diagnostic = (@($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+        throw "Remote file write failed on $RemoteHost (exit code $LASTEXITCODE): $diagnostic"
+    }
+}
+
 function Get-LocalSettingsPath {
     Join-Path $env:LOCALAPPDATA 'Microsoft\PowerToys\MouseWithoutBorders\settings.json'
 }
@@ -132,6 +154,35 @@ Write-Output 'REMOTE PAIRING SETTINGS READY'
 '@
 }
 
+function Test-UsableMachineLayout([object]$Settings) {
+    if ($null -eq $Settings -or $null -eq $Settings.properties) { return $false }
+    $matrix = @($Settings.properties.MachineMatrixString)
+    $pool = [string]$Settings.properties.MachinePool.value
+    $available = @($pool -split ',' | Where-Object { $_ -match '^([^:]+):\d+$' } | ForEach-Object { $Matches[1] })
+    $selected = @($matrix | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    return ($matrix.Count -eq 4 -and $selected.Count -ge 2 -and (@($selected | Select-Object -Unique).Count -eq $selected.Count) -and (@($selected | Where-Object { $_ -in $available }).Count -eq $selected.Count))
+}
+
+function Sync-RemoteMachineLayout([object]$LocalSettings) {
+    $layout = [pscustomobject]@{
+        MachineMatrixString = @($LocalSettings.properties.MachineMatrixString)
+        MatrixOneRow = [bool]$LocalSettings.properties.MatrixOneRow.value
+    }
+    $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($layout | ConvertTo-Json -Depth 10 -Compress)))
+    Invoke-RemoteScript -Variables @{ SettingsPath = $remoteSettings; LayoutPayload = $payload } -Script @'
+if (-not (Test-Path -LiteralPath $SettingsPath)) { throw "Remote MWB settings not found: $SettingsPath" }
+$layout = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LayoutPayload))) | ConvertFrom-Json
+$settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+if (-not $settings.properties) { throw 'Remote MWB settings have no properties object.' }
+$settings.properties.MachineMatrixString = @($layout.MachineMatrixString)
+$settings.properties.MatrixOneRow.value = [bool]$layout.MatrixOneRow
+$temporary = "$SettingsPath.mwb-enhanced.tmp"
+[IO.File]::WriteAllText($temporary, ($settings | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+Move-Item -LiteralPath $temporary -Destination $SettingsPath -Force
+Write-Output 'REMOTE MACHINE LAYOUT READY'
+'@
+}
+
 function Sync-LocalPairingSettings([string]$RemoteSettingsJson) {
     $remote = $RemoteSettingsJson | ConvertFrom-Json
     if (-not $remote.properties.MachinePool.value -or @($remote.properties.MachinePool.value -split ',' | Where-Object { $_ -match ':' }).Count -lt 2) {
@@ -164,7 +215,18 @@ function Sync-PairingSettings {
     $remote = $remoteJson | ConvertFrom-Json
     $local = Get-SettingsObject (Get-LocalSettingsPath)
     if (Test-UsablePairingSettings $remote) {
+        $localLayout = $null
+        if (Test-UsableMachineLayout $local) {
+            $localLayout = $local
+        }
         Sync-LocalPairingSettings $remoteJson
+        if ($null -ne $localLayout) {
+            Sync-RemoteMachineLayout $localLayout | Out-Null
+            $updatedLocal = Get-SettingsObject (Get-LocalSettingsPath)
+            $updatedLocal.properties.MachineMatrixString = @($localLayout.properties.MachineMatrixString)
+            $updatedLocal.properties.MatrixOneRow.value = [bool]$localLayout.properties.MatrixOneRow.value
+            Write-SettingsObject (Get-LocalSettingsPath) $updatedLocal
+        }
     }
     elseif (Test-UsablePairingSettings $local) {
         Sync-RemotePairingSettings $local | Out-Null
@@ -227,6 +289,7 @@ function Start-LocalTray {
         '-File', "`"$localTray`"",
         '-MainPath', "`"$localMain`"",
         '-HelperPath', "`"$localHelper`"",
+        '-SettingsPath', (Get-LocalSettingsPath),
         '-TcpPort', $TcpPort
     )
     Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WorkingDirectory $LocalInstallDir -WindowStyle Hidden | Out-Null
@@ -269,10 +332,7 @@ function Wait-ForMwbConnection {
 
 function Install-RemoteTrayScript {
     if (-not (Test-Path -LiteralPath $localTray)) { throw "Tray script not found: $localTray" }
-    $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($localTray)))
-    Invoke-RemoteScript -Variables @{ TrayPath = $remoteTray; TrayPayload = $payload } -Script @'
-[IO.File]::WriteAllBytes($TrayPath, [Convert]::FromBase64String($TrayPayload))
-'@ | Out-Null
+    Write-RemoteFile -Path $remoteTray -Bytes ([IO.File]::ReadAllBytes($localTray))
 }
 
 function Invoke-RemoteStop {
@@ -304,6 +364,7 @@ function Invoke-RemoteStart {
         RemoteMain = $remoteMain
         RemoteHelper = $remoteHelper
         RemoteTray = $remoteTray
+        SettingsPath = $remoteSettings
         RemoteDir = $RemoteInstallDir
         InteractiveUser = $RemoteInteractiveUser
         TcpPort = $TcpPort
@@ -326,7 +387,7 @@ try {
 
     $trayTask = $taskName + '-Tray'
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $trayArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$RemoteTray`" -MainPath `"$RemoteMain`" -HelperPath `"$RemoteHelper`" -TcpPort $TcpPort"
+    $trayArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$RemoteTray`" -MainPath `"$RemoteMain`" -HelperPath `"$RemoteHelper`" -SettingsPath `"$SettingsPath`" -TcpPort $TcpPort"
     $trayAction = New-ScheduledTaskAction -Execute $powershell -Argument $trayArguments -WorkingDirectory $RemoteDir
     Register-ScheduledTask -TaskName $trayTask -Action $trayAction -Principal $principal -Force | Out-Null
     try { Start-ScheduledTask -TaskName $trayTask; Start-Sleep -Seconds 2 } finally { Unregister-ScheduledTask -TaskName $trayTask -Confirm:$false -ErrorAction SilentlyContinue }
@@ -366,14 +427,14 @@ function Install-LocalAutostart {
 
 function Install-RemoteAutostart {
     Install-RemoteTrayScript
-    Invoke-RemoteScript -Variables @{ RemoteMain = $remoteMain; RemoteHelper = $remoteHelper; RemoteTray = $remoteTray; RemoteDir = $RemoteInstallDir; InteractiveUser = $RemoteInteractiveUser; Task = $TaskName; TcpPort = $TcpPort } -Script @'
+    Invoke-RemoteScript -Variables @{ RemoteMain = $remoteMain; RemoteHelper = $remoteHelper; RemoteTray = $remoteTray; SettingsPath = $remoteSettings; RemoteDir = $RemoteInstallDir; InteractiveUser = $RemoteInteractiveUser; Task = $TaskName; TcpPort = $TcpPort } -Script @'
 if (-not (Test-Path -LiteralPath $RemoteMain)) { throw "Remote MWB binary not found: $RemoteMain" }
 $principal = New-ScheduledTaskPrincipal -UserId $InteractiveUser -LogonType Interactive -RunLevel Highest
 $action = New-ScheduledTaskAction -Execute $RemoteMain -WorkingDirectory $RemoteDir
 Register-ScheduledTask -TaskName $Task -Action $action -Principal $principal -Force | Out-Null
 $trayTask = $Task + '-Tray'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$trayArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$RemoteTray`" -MainPath `"$RemoteMain`" -HelperPath `"$RemoteHelper`" -TcpPort $TcpPort"
+$trayArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$RemoteTray`" -MainPath `"$RemoteMain`" -HelperPath `"$RemoteHelper`" -SettingsPath `"$SettingsPath`" -TcpPort $TcpPort"
 $trayAction = New-ScheduledTaskAction -Execute $powershell -Argument $trayArguments -WorkingDirectory $RemoteDir
 Register-ScheduledTask -TaskName $trayTask -Action $trayAction -Principal $principal -Force | Out-Null
 Write-Output "REMOTE AUTOSTART INSTALLED: $Task"
