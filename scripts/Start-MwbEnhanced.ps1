@@ -314,7 +314,7 @@ function Start-LocalMwb {
 }
 
 function Wait-ForMwbConnection {
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    for ($attempt = 0; $attempt -lt 45; $attempt++) {
         $main = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq [IO.Path]::GetFullPath($localMain)) } |
             Select-Object -First 1
@@ -370,15 +370,30 @@ function Invoke-RemoteStart {
         TcpPort = $TcpPort
     } -Script @'
 if (-not (Test-Path -LiteralPath $RemoteMain)) { throw "Remote MWB binary not found: $RemoteMain" }
+$loggedOnUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+if ([string]::IsNullOrWhiteSpace($loggedOnUser)) { throw 'No interactive user is logged on to the remote machine.' }
+if (-not $loggedOnUser.Equals($InteractiveUser, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Remote interactive user mismatch. LoggedOn=$loggedOnUser Expected=$InteractiveUser"
+}
 $taskName = 'MwbEnhancedOneClick-' + [Guid]::NewGuid().ToString('N')
 $action = New-ScheduledTaskAction -Execute $RemoteMain -WorkingDirectory $RemoteDir
 $principal = New-ScheduledTaskPrincipal -UserId $InteractiveUser -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
 try {
     Start-ScheduledTask -TaskName $taskName
-    Start-Sleep -Seconds 4
-    $current = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq [IO.Path]::GetFullPath($RemoteMain) } | Select-Object -First 1
-    if (-not $current) { throw 'Remote MWB did not start.' }
+    $current = $null
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        $current = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -eq [IO.Path]::GetFullPath($RemoteMain) } |
+            Select-Object -First 1
+        if ($current) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $current) {
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        $taskState = if ($task) { $task.State } else { 'missing' }
+        throw "Remote MWB did not start. LoggedOn=$loggedOnUser TaskState=$taskState"
+    }
     if ($current.SessionId -eq 0) { throw "Remote MWB started in Session 0 (PID=$($current.ProcessId))." }
     $helper = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq [IO.Path]::GetFullPath($RemoteHelper) } | Select-Object -First 1
     if (-not $helper -and (Test-Path -LiteralPath $RemoteHelper)) {
