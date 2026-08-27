@@ -472,6 +472,8 @@ Write-Output "REMOTE AUTOSTART REMOVED: $Task"
 
 switch ($Action) {
     'start' {
+        Stop-LocalMwb
+        Invoke-RemoteStop
         Sync-PairingSettings
         Start-LocalMwb
         Invoke-RemoteStart
@@ -482,10 +484,10 @@ switch ($Action) {
         Invoke-RemoteStop
     }
     'restart' {
-        Sync-PairingSettings
         Stop-LocalMwb
         Invoke-RemoteStop
         Start-Sleep -Seconds 2
+        Sync-PairingSettings
         Start-LocalMwb
         Invoke-RemoteStart
         Wait-ForMwbConnection
