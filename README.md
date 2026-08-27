@@ -49,9 +49,11 @@ Build the full PowerToys tree with its normal developer instructions, deploy the
 
 The target MWB process must run in the logged-on interactive user context that has read access to the source machine's drive share. Running the target as `SYSTEM` is sufficient for mouse hooks in some test setups, but it cannot authenticate to a peer's local SMB share and will make the overlay appear without transferring files. Configure the source share and the corresponding NTFS ACL for the actual peer account, then verify the UNC path from that same account before testing a drag. The enhanced receiver logs the resolved UNC source and reports `SMB access denied` separately from a missing source.
 
-The original mouse, keyboard, clipboard, and screen-switching paths are unchanged. To roll back only the enhancement, deploy the unmodified upstream MWB binaries; no registry, service, or installed PowerToys package is modified by this repository.
+The original mouse, keyboard, clipboard, and screen-switching paths are preserved, with one reliability fix: a transient failure to query the input desktop during an injected cross-machine click no longer closes MWB sockets. Apply `scripts/Apply-MwbDesktopSwitchFix.ps1` to the full PowerToys source tree before building the MWB binary. To roll back only the enhancement, deploy the unmodified upstream MWB binaries; no registry, service, or installed PowerToys package is modified by this repository.
 
-原有鼠标、键盘、剪贴板和跨屏状态机未修改。若需回滚增强功能，只需部署未修改的上游 MWB DLL；本仓库不会修改注册表、服务或已安装的 PowerToys 包。
+原有鼠标、键盘、剪贴板和跨屏状态机保持原逻辑，并增加了上述桌面查询失败保护。若需回滚增强功能，只需部署未修改的上游 MWB DLL；本仓库不会修改注册表、服务或已安装的 PowerToys 包。
+
+桌面切换检测增加了一个稳定性修复：跨机注入点击期间，如果 Windows 短暂无法查询输入桌面，不再误关闭 MWB socket。构建完整 PowerToys 源码前先运行 `scripts/Apply-MwbDesktopSwitchFix.ps1` 应用该补丁。
 
 For a controlled two-machine restart, run the management script from an elevated PowerShell on PC-A:
 
